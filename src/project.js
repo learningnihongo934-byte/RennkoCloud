@@ -2,8 +2,9 @@
 // users and sessions, documents, live subscriptions, stored files and the hosted site.
 import { DurableObject } from 'cloudflare:workers';
 import { applyOp, parseDocPath, normQuery, newId, err } from '../public/rennko-core.js';
-import { signToken, verifyToken, hashPassword, checkPassword, randomToken, sha256hex, verifyGoogleIdToken } from './crypto.js';
+import { signToken, verifyToken, hashPassword, checkPassword, randomToken, sha256hex, verifyGoogleIdToken, unb64url } from './crypto.js';
 import { allowed, validateRules, DEFAULT_RULES, LOCKED_RULES } from './rules.js';
+import { screen as renderScreen, esc } from './pages.js';
 
 const CHUNK = 1536 * 1024; // SQLite rows top out at 2 MB
 const TOKEN_TTL = 3600;
@@ -23,6 +24,8 @@ CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, size INTEGER, type TEXT,
 CREATE TABLE IF NOT EXISTS site(path TEXT PRIMARY KEY, hash TEXT, type TEXT, size INTEGER);
 CREATE TABLE IF NOT EXISTS blobmeta(hash TEXT PRIMARY KEY, size INTEGER, created INTEGER);
 CREATE TABLE IF NOT EXISTS blobs(hash TEXT, n INTEGER, data BLOB, PRIMARY KEY(hash, n));
+CREATE TABLE IF NOT EXISTS identities(provider TEXT, pid TEXT, uid TEXT, profile TEXT, PRIMARY KEY(provider, pid));
+CREATE INDEX IF NOT EXISTS identities_uid ON identities(uid);
 CREATE TABLE IF NOT EXISTS registry(id TEXT PRIMARY KEY, owner TEXT, created INTEGER);
 CREATE INDEX IF NOT EXISTS registry_owner ON registry(owner);
 `;
@@ -56,6 +59,7 @@ export class Project extends DurableObject {
   get exists() {
     if (this._exists) return true;
     this._exists = this.sql.exec("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").toArray().length > 0 && !!this.meta('id');
+    if (this._exists) this.sql.exec(SCHEMA); // adds tables from newer versions
     return this._exists;
   }
   meta(k) {
@@ -94,10 +98,12 @@ export class Project extends DurableObject {
           const { owner } = await req.json();
           this.init(pid, owner);
           return json({ ok: true });
-        } else if (route === null) return this.page(404, 'Nothing here yet', `There's no Rennko Cloud project called <b>${esc(pid)}</b>.`);
+        } else if (route === null) return this.screenFor(req, url, 'free', pid);
         else throw err('not-found', `No project "${pid}"`);
       }
       this.origin = req.headers.get('x-rk-origin') || url.origin;
+      this.consoleUrl = req.headers.get('x-rk-console') || this.origin;
+      this.siteUrl = req.headers.get('x-rk-site') || this.origin;
       if (route === null) return await this.serveSite(req, url);
       return await this.api(req, url, route);
     } catch (e) {
@@ -130,10 +136,15 @@ export class Project extends DurableObject {
   async api(req, url, route) {
     const m = req.method;
     const body = async () => { try { return await req.json(); } catch { throw err('invalid-argument', 'Expected a JSON body'); } };
-    if (route === 'info' && m === 'GET') return json({ id: this.pid, googleClientId: this.meta('settings')?.googleClientId || null });
+    if (route === 'info' && m === 'GET') {
+      const s = this.meta('settings') || {};
+      return json({ id: this.pid, googleClientId: s.googleClientId || s.oauth?.google?.clientId || null, providers: { github: !!s.oauth?.github?.clientSecret, google: !!s.oauth?.google?.clientSecret } });
+    }
     if (route === 'ws') return this.wsConnect(req);
 
     // auth endpoints read their own credentials
+    const oauth = route.match(/^auth\/oauth\/(github|google)(\/callback)?$/);
+    if (oauth && m === 'GET') return oauth[2] ? this.oauthCallback(url, oauth[1]) : this.oauthStart(url, oauth[1]);
     if (route.startsWith('auth/')) return json(await this.authRoute(route.slice(5), m, req, body));
 
     const auth = await this.authFrom(req);
@@ -174,7 +185,111 @@ export class Project extends DurableObject {
 
   // ---- auth ----
   pubUser(u) {
-    return { uid: u.uid, email: u.email, name: u.name, photo: u.photo, provider: u.provider, anon: u.provider === 'anonymous', created: u.created };
+    const providers = this.sql.exec('SELECT provider, pid, profile FROM identities WHERE uid=? ORDER BY provider', u.uid).toArray()
+      .map(r => ({ provider: r.provider, id: r.pid, ...JSON.parse(r.profile || '{}') }));
+    return { uid: u.uid, email: u.email, name: u.name, photo: u.photo, provider: u.provider, anon: u.provider === 'anonymous', created: u.created, providers };
+  }
+
+  // Find, create or link the user for a Google/GitHub identity. linkUid links it to that user;
+  // soft linking (an anonymous user signing in) falls back to the existing owner of the identity.
+  oauthUser(provider, linkUid, p, soft = false) {
+    const now = Date.now();
+    const id = String(p.id);
+    const profile = JSON.stringify({ login: p.login ?? null, name: p.name ?? null, email: p.email ?? null, photo: p.photo ?? null });
+    const found = this.sql.exec('SELECT uid FROM identities WHERE provider=? AND pid=?', provider, id).toArray()[0];
+    if (linkUid && !(soft && found && found.uid !== linkUid)) {
+      if (found && found.uid !== linkUid) throw err('already-exists', `That ${provider === 'github' ? 'GitHub' : 'Google'} account is already connected to a different user`);
+      if (!this.user(linkUid)) throw err('unauthenticated', 'Sign in first');
+      this.sql.exec('INSERT OR REPLACE INTO identities(provider, pid, uid, profile) VALUES(?, ?, ?, ?)', provider, id, linkUid, profile);
+      this.sql.exec("UPDATE users SET name=COALESCE(name, ?), photo=COALESCE(photo, ?), provider=CASE WHEN provider='anonymous' THEN ? ELSE provider END WHERE uid=?", p.name ?? null, p.photo ?? null, provider, linkUid);
+      return this.user(linkUid);
+    }
+    let uid = found?.uid;
+    const email = p.email ? String(p.email).toLowerCase() : null;
+    if (!uid && email && p.emailVerified) uid = this.sql.exec('SELECT uid FROM users WHERE email=?', email).toArray()[0]?.uid;
+    if (!uid) {
+      uid = newId();
+      const free = email && !this.sql.exec('SELECT 1 FROM users WHERE email=?', email).toArray().length;
+      this.sql.exec('INSERT INTO users(uid, email, provider, name, photo, created, last) VALUES(?, ?, ?, ?, ?, ?, ?)', uid, free ? email : null, provider, p.name ?? null, p.photo ?? null, now, now);
+    }
+    this.sql.exec('INSERT OR REPLACE INTO identities(provider, pid, uid, profile) VALUES(?, ?, ?, ?)', provider, id, uid, profile);
+    return this.user(uid);
+  }
+
+  allowedOrigin(o) {
+    let u;
+    try { u = new URL(o); } catch { throw err('invalid-argument', 'Missing the app origin'); }
+    const list = this.meta('settings')?.authorizedOrigins || [];
+    if (u.origin === new URL(this.origin).origin || list.includes(u.origin) || ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)) return u.origin;
+    throw err('permission-denied', `${u.origin} isn't an authorized domain for this project. Add it in the console under Authentication.`);
+  }
+
+  // Popup sign-in, step 1: send the user to GitHub or Google
+  async oauthStart(url, provider) {
+    try {
+      const cfg = this.meta('settings')?.oauth?.[provider];
+      if (!cfg?.clientId || !cfg?.clientSecret) throw err('failed-precondition', `${provider === 'github' ? 'GitHub' : 'Google'} sign-in isn't set up for this project yet. Add it in the console under Authentication.`);
+      const origin = this.allowedOrigin(url.searchParams.get('origin'));
+      const tok = url.searchParams.get('token');
+      const cur = tok ? await this.authFromToken(tok).catch(() => null) : null;
+      const scopes = String(url.searchParams.get('scopes') || '').slice(0, 300);
+      const mode = url.searchParams.get('mode') === 'link' ? 'link' : 'signin';
+      if (mode === 'link' && (!cur || cur.admin)) throw err('unauthenticated', 'Sign in before connecting another account');
+      const state = await signToken(this.env.SECRET, 'oauth:' + this.pid, { prov: provider, uid: cur && !cur.admin ? cur.uid : null, origin, scopes, mode }, 600);
+      const redirect_uri = `${this.origin}/__/auth/oauth/${provider}/callback`;
+      const target = provider === 'github'
+        ? 'https://github.com/login/oauth/authorize?' + new URLSearchParams({ client_id: cfg.clientId, redirect_uri, state, scope: scopes, allow_signup: 'true' })
+        : 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({ client_id: cfg.clientId, redirect_uri, state, response_type: 'code', prompt: 'select_account', scope: ['openid', 'email', 'profile', ...scopes.split(/[ ,]+/).filter(Boolean)].join(' ') });
+      return Response.redirect(target, 302);
+    } catch (e) {
+      return this.oauthDone(url.searchParams.get('origin'), null, e);
+    }
+  }
+
+  // Popup sign-in, step 2: trade the code for the user's profile, sign them in, hand the result to the app
+  async oauthCallback(url, provider) {
+    let st = null;
+    try {
+      st = await verifyToken(this.env.SECRET, url.searchParams.get('state'));
+      if (!st || st.p !== 'oauth:' + this.pid || st.prov !== provider) { st = null; throw err('unauthenticated', 'That sign-in link expired. Try again.'); }
+      if (url.searchParams.get('error')) throw err('cancelled', url.searchParams.get('error_description') || 'Sign-in was cancelled');
+      const cfg = this.meta('settings')?.oauth?.[provider] || {};
+      const redirect_uri = `${this.origin}/__/auth/oauth/${provider}/callback`;
+      const code = url.searchParams.get('code');
+      let profile, accessToken;
+      if (provider === 'github') {
+        const t = await (await fetch('https://github.com/login/oauth/access_token', { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json' }, body: JSON.stringify({ client_id: cfg.clientId, client_secret: cfg.clientSecret, code, redirect_uri }) })).json();
+        if (!t.access_token) throw err('unauthenticated', t.error_description || 'GitHub sign-in failed');
+        accessToken = t.access_token;
+        const gu = await (await fetch('https://api.github.com/user', { headers: { authorization: `Bearer ${accessToken}`, accept: 'application/vnd.github+json', 'user-agent': 'rennko-cloud' } })).json();
+        if (!gu.id) throw err('unauthenticated', "Couldn't read your GitHub profile");
+        profile = { id: gu.id, login: gu.login, name: gu.name || gu.login, email: gu.email, photo: gu.avatar_url, emailVerified: false };
+      } else {
+        const t = await (await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ code, client_id: cfg.clientId, client_secret: cfg.clientSecret, redirect_uri, grant_type: 'authorization_code' }) })).json();
+        if (!t.id_token) throw err('unauthenticated', t.error_description || 'Google sign-in failed');
+        accessToken = t.access_token;
+        const c = JSON.parse(new TextDecoder().decode(unb64url(t.id_token.split('.')[1])));
+        profile = { id: c.sub, email: c.email, emailVerified: !!c.email_verified, name: c.name, photo: c.picture };
+      }
+      const cur = st.uid ? this.user(st.uid) : null;
+      const user = st.mode === 'link' ? this.oauthUser(provider, st.uid, profile) : this.oauthUser(provider, cur?.provider === 'anonymous' ? cur.uid : null, profile, true);
+      const s = await this.session(user);
+      return this.oauthDone(st.origin, { ...s, provider, providerToken: accessToken, providerProfile: { id: String(profile.id), login: profile.login ?? null, name: profile.name ?? null, email: profile.email ?? null, photo: profile.photo ?? null } });
+    } catch (e) {
+      return this.oauthDone(st?.origin, null, e);
+    }
+  }
+
+  // The popup's last page: post the result to the app that opened it (only if that app's origin is allowed)
+  oauthDone(origin, result, e) {
+    const msg = { type: 'rennko-oauth', ...(result ? { result } : { error: { code: e?.code || 'internal', message: e?.message || 'Sign-in failed' } }) };
+    let target = null;
+    try { target = this.allowedOrigin(origin); } catch {}
+    const data = JSON.stringify(msg).replace(/</g, '\\u003c');
+    return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rennko Cloud sign-in</title>
+<body style="font:16px/1.5 system-ui,sans-serif;padding:2rem;text-align:center;color-scheme:light dark"><p>${result ? 'Signed in. You can close this window.' : esc(msg.error.message)}</p>
+<script>const msg = ${data}, target = ${JSON.stringify(target)}; if (window.opener && target) { window.opener.postMessage(msg, target); if (msg.result) window.close(); }</script>`,
+      { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' } });
   }
   user(uid) { return this.sql.exec('SELECT * FROM users WHERE uid=?', uid).toArray()[0]; }
   async session(u, refresh) {
@@ -221,16 +336,10 @@ export class Project extends DurableObject {
     }
     if (r === 'google' && m === 'POST') {
       const { idToken } = await body();
-      const g = await verifyGoogleIdToken(idToken, this.meta('settings')?.googleClientId);
-      const email = g.email_verified ? String(g.email).toLowerCase() : null;
-      let u = this.sql.exec('SELECT * FROM users WHERE gsub=?', g.sub).toArray()[0] || (email && this.sql.exec('SELECT * FROM users WHERE email=?', email).toArray()[0]);
-      if (u) this.sql.exec('UPDATE users SET gsub=?, name=COALESCE(name, ?), photo=COALESCE(photo, ?) WHERE uid=?', g.sub, g.name || null, g.picture || null, u.uid);
-      else {
-        const uid = newId();
-        this.sql.exec("INSERT INTO users(uid, email, provider, gsub, name, photo, created, last) VALUES(?, ?, 'google', ?, ?, ?, ?, ?)", uid, email, g.sub, g.name || null, g.picture || null, now, now);
-      }
-      u = this.sql.exec('SELECT * FROM users WHERE gsub=?', g.sub).one();
-      return this.session(u);
+      const s = this.meta('settings') || {};
+      const g = await verifyGoogleIdToken(idToken, s.googleClientId || s.oauth?.google?.clientId);
+      const cur = await this.authFrom(req).catch(() => null);
+      return this.session(this.oauthUser('google', cur?.anon ? cur.uid : null, { id: g.sub, email: g.email, emailVerified: !!g.email_verified, name: g.name, photo: g.picture }, true));
     }
     if (r === 'refresh' && m === 'POST') {
       const { refreshToken } = await body();
@@ -264,10 +373,18 @@ export class Project extends DurableObject {
       this.deleteUser(u.uid);
       return { ok: true };
     }
+    if (r === 'unlink' && m === 'POST') {
+      const { provider, refreshToken } = await body();
+      const others = this.sql.exec('SELECT COUNT(*) AS n FROM identities WHERE uid=? AND provider != ?', u.uid, String(provider)).one().n;
+      if (!u.pass && !others) throw err('failed-precondition', "That's the only way to sign in to this account");
+      this.sql.exec('DELETE FROM identities WHERE uid=? AND provider=?', u.uid, String(provider));
+      return this.session(u, refreshToken);
+    }
     throw err('not-found', `Unknown endpoint /__/auth/${r}`);
   }
 
   deleteUser(uid) {
+    this.sql.exec('DELETE FROM identities WHERE uid=?', uid);
     this.sql.exec('DELETE FROM sessions WHERE uid=?', uid);
     this.sql.exec('DELETE FROM users WHERE uid=?', uid);
   }
@@ -278,9 +395,9 @@ export class Project extends DurableObject {
     return r ? { data: JSON.parse(r.data), updated: r.updated } : null;
   }
 
-  can(auth, section, path, action, doc, data) {
+  can(auth, section, path, action, doc, data, now = Date.now()) {
     if (auth?.admin) return true;
-    return allowed(this.rules()[section], path, action, { auth: authVar(auth), doc: doc ?? null, data: data ?? null, now: Date.now() });
+    return allowed(this.rules()[section], path, action, { auth: authVar(auth), doc: doc ?? null, data: data ?? null, now });
   }
 
   dbGet(auth, path) {
@@ -338,7 +455,7 @@ export class Project extends DurableObject {
         const after = applyOp(op, before, now);
         if (after && JSON.stringify(after).length > 1_000_000) throw err('invalid-argument', 'Documents must be under 1 MB');
         const action = after == null ? 'delete' : before == null ? 'create' : 'update';
-        if (!this.can(auth, 'db', op.path, action, before, after)) throw err('permission-denied', `Missing permission to ${action} ${op.path}`);
+        if (!this.can(auth, 'db', op.path, action, before, after, now)) throw err('permission-denied', `Missing permission to ${action} ${op.path}`);
         staged.set(op.path, after);
       }
       for (const [path, data] of staged) {
@@ -557,7 +674,7 @@ export class Project extends DurableObject {
   async serveSite(req, url) {
     if (req.method !== 'GET' && req.method !== 'HEAD') return new Response('Method not allowed', { status: 405 });
     const info = this.meta('hosting');
-    if (!info) return this.page(200, `${this.pid} is ready`, `This is a new <b>Rennko Cloud</b> project. Deploy a site from the console or with <code>rennko deploy</code> and it shows up here.`);
+    if (!info) return this.screenFor(req, url, 'empty');
     const cfg = info.config || {};
     let p;
     try { p = decodeURIComponent(url.pathname); } catch { p = url.pathname; }
@@ -570,17 +687,17 @@ export class Project extends DurableObject {
     }
     if (!row && cfg.spa && !/\.[a-z0-9]+$/i.test(p)) row = find('/index.html');
     if (!row) { row = find('/404.html'); status = 404; }
-    if (!row) return this.page(404, 'Page not found', `There's no page at <code>${esc(p)}</code>.`);
+    if (!row) return this.screenFor(req, url, 'missing');
     const etag = `"${row.hash}"`;
     const headers = { 'content-type': row.type, etag, 'cache-control': 'public, max-age=0, must-revalidate' };
     if (status === 200 && req.headers.get('if-none-match') === etag) return new Response(null, { status: 304, headers });
     return new Response(req.method === 'HEAD' ? null : this.readBlob(row.hash), { status, headers });
   }
 
-  page(status, title, body) {
-    return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>
-<style>body{font:16px/1.6 system-ui,sans-serif;margin:0;min-height:100vh;display:grid;place-items:center;background:#faf8f5;color:#222}main{max-width:32rem;padding:2rem}h1{font-size:1.4rem;margin:0 0 .5rem}code{background:#0001;padding:.1em .35em;border-radius:4px}a{color:#c2410c}@media(prefers-color-scheme:dark){body{background:#151413;color:#eee}code{background:#fff1}}</style>
-<main><h1>${esc(title)}</h1><p>${body}</p><p><small>Powered by <a href="https://console.rennko.tech">Rennko Cloud</a></small></p></main>`, { status, headers: { 'content-type': 'text/html; charset=utf-8' } });
+  screenFor(req, url, kind, name = this.pid) {
+    const origin = req.headers.get('x-rk-origin') || url.origin;
+    return renderScreen({ kind, name, url: origin + (kind === 'missing' ? url.pathname : ''), home: origin + '/',
+      consoleUrl: req.headers.get('x-rk-console') || origin, siteUrl: req.headers.get('x-rk-site') || origin });
   }
 
   // ---- admin ----
@@ -588,7 +705,7 @@ export class Project extends DurableObject {
     if (r === 'info' && m === 'GET') {
       return {
         id: this.pid, owner: this.meta('owner'), created: this.meta('created'), adminKey: this.meta('adminKey'),
-        rules: this.rules(), settings: this.meta('settings') || {}, hosting: this.meta('hosting') || null, url: this.origin,
+        rules: this.rules(), settings: maskSettings(this.meta('settings') || {}), hosting: this.meta('hosting') || null, url: this.origin,
         usage: { bytes: this.sql.databaseSize, cap: this.cap(), users: this.count('users'), docs: this.count('docs'), files: this.count('files'), connections: this.ctx.getWebSockets().length },
       };
     }
@@ -601,10 +718,18 @@ export class Project extends DurableObject {
     }
     if (r === 'settings' && m === 'PUT') {
       const b = await body();
-      const s = { ...(this.meta('settings') || {}) };
+      const s = structuredClone(this.meta('settings') || {});
       if ('googleClientId' in b) s.googleClientId = String(b.googleClientId || '').trim() || null;
+      for (const p of ['github', 'google']) {
+        const o = b.oauth?.[p];
+        if (!o) continue;
+        s.oauth ??= {};
+        if (!o.clientId) { delete s.oauth[p]; continue; }
+        s.oauth[p] = { clientId: String(o.clientId).trim(), clientSecret: o.clientSecret ? String(o.clientSecret).trim() : s.oauth[p]?.clientSecret || null };
+      }
+      if (Array.isArray(b.authorizedOrigins)) s.authorizedOrigins = b.authorizedOrigins.map(o => { try { return new URL(String(o).trim()).origin; } catch { return null; } }).filter(Boolean).slice(0, 20);
       this.setMeta('settings', s);
-      return s;
+      return maskSettings(s);
     }
     if (r === 'users' && m === 'GET') {
       const q = url.searchParams.get('q') || '';
@@ -638,6 +763,9 @@ export class Project extends DurableObject {
   }
 }
 
-function esc(s) {
-  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// Settings as the console sees them: client secrets are never sent back, only whether one is set
+function maskSettings(s) {
+  const out = structuredClone(s);
+  for (const p in out.oauth || {}) out.oauth[p] = { clientId: out.oauth[p].clientId, secretSet: !!out.oauth[p].clientSecret };
+  return out;
 }

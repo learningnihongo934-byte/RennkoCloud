@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rennko Cloud</title>
+  <meta name="description" content="Rennko Cloud is a free, open-source, offline-first alternative to Firebase: auth, a realtime database, file storage and hosting at your-app.rennko.tech.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23c2410c'/><path d='M16 6c1 5 7 7 7 13a7 7 0 0 1-14 0c0-3 2-5 3-6 0 3 1 4 2 4 0-4 0-8 2-11z' fill='%23fff'/></svg>">
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="logo" href="./"><svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M16 6c1 5 7 7 7 13a7 7 0 0 1-14 0c0-3 2-5 3-6 0 3 1 4 2 4 0-4 0-8 2-11z" fill="#fff"/></svg>Rennko Cloud</a>
+    <a href="docs">Docs</a>
+    <a class="hide-sm" href="https://github.com/learningnihongo934-byte/RennkoCloud">GitHub</a>
+    <a class="btn primary small" data-console href="https://console.rennko.tech">Open console</a>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <span class="eyebrow">Free · Open source · Offline-first</span>
+      <h1>The <em>free</em> backend for your apps.</h1>
+      <p class="lede">Sign-in, a realtime database, file storage and hosting, all in one. Your app keeps working offline and syncs when it's back online. No credit card, no bill.</p>
+      <div class="ctas"><a class="btn primary" data-console href="https://console.rennko.tech">Start building, free →</a><a class="btn" href="docs">Read the docs</a></div>
+      <div class="url">Your app lives at https://<b>your-app</b>.rennko.tech</div>
+    </div>
+    <pre><code><span style="color:var(--dim)">&lt;script type="module"&gt;</span>
+import { app, serverTimestamp }
+  from 'https://your-app.rennko.tech/__/init.js'
+
+await app.auth.signInWithGitHub()
+const chat = app.db.collection('messages')
+
+<span style="color:var(--dim)">// Live: runs now from the offline cache,
+// then again on every change</span>
+chat.orderBy('at').onSnapshot(snap =&gt;
+  render(snap.docs.map(d =&gt; d.data())))
+
+chat.add({ text: 'hi!', at: serverTimestamp() })
+<span style="color:var(--dim)">&lt;/script&gt;</span></code></pre>
+  </header>
+
+  <section>
+    <h2>Everything a Firebase app needs</h2>
+    <p class="sub">The same ideas you already know, with no install, no build step and no setup beyond picking a name.</p>
+    <div class="grid">
+      <div class="card"><div class="icon">👤</div><h3>Auth</h3><p>Email and password, anonymous, GitHub and Google sign-in. Anonymous users can upgrade later and keep their data.</p></div>
+      <div class="card"><div class="icon">⚡</div><h3>Realtime database</h3><p>Collections and documents with queries. <code>onSnapshot</code> listeners update the moment anything changes.</p></div>
+      <div class="card"><div class="icon">📴</div><h3>Works offline</h3><p>Data is cached on the device. Writes show up instantly, wait in a queue that survives reloads, and sync when you're back online.</p></div>
+      <div class="card"><div class="icon">🗂️</div><h3>File storage</h3><p>Upload images and files and get shareable links. Rules decide who can read and write.</p></div>
+      <div class="card"><div class="icon">🌐</div><h3>Hosting</h3><p>Drag your site's folder into the console, or run <code>rennko deploy</code>. Only changed files upload.</p></div>
+      <div class="card"><div class="icon">🛡️</div><h3>Security rules</h3><p>Simple rules like <code>doc.owner == auth.uid</code> keep each user's data theirs.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Offline-first, not offline-maybe</h2>
+    <p class="sub">Rennko Cloud apps keep working on a plane, in a tunnel or on bad Wi-Fi. You don't write any extra code.</p>
+    <div class="steps">
+      <div class="card"><h3>Write anywhere</h3><p><code>set()</code> and <code>add()</code> update your UI right away, connected or not.</p></div>
+      <div class="card"><h3>Saved on the device</h3><p>Pending writes and cached data live in IndexedDB, so a reload or a crash loses nothing.</p></div>
+      <div class="card"><h3>Synced when online</h3><p>Writes reach the server exactly once, and every listener gets the latest data.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Free, for real</h2>
+    <p class="sub">Rennko Cloud runs on Cloudflare's free tier, which is fast, global and always on, even while your computer is off. It's also open source: run your own copy on your own free Cloudflare account with one command.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th></th><th>Rennko Cloud</th><th>Firebase</th></tr></thead>
+      <tbody>
+        <tr><td>Price</td><td class="yes">Free</td><td>Free tier, then pay as you go</td></tr>
+        <tr><td>Credit card</td><td class="yes">Never</td><td>Needed for some features</td></tr>
+        <tr><td>Offline sync</td><td class="yes">Built in</td><td>Built in</td></tr>
+        <tr><td>Open source / self-host</td><td class="yes">Yes, MIT</td><td>No</td></tr>
+        <tr><td>Your own subdomain</td><td><code>app.rennko.tech</code></td><td><code>app.web.app</code></td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Built on Rennko Cloud</h2>
+    <div class="showcase">
+      <a class="card" href="https://skelr.rennko.tech"><h3>Skelr</h3><p>Paste a GitHub repo and Skelr checks it for copied code. It uses GitHub sign-in, the database and hosting. <b>skelr.rennko.tech</b></p></a>
+      <a class="card" data-console href="https://console.rennko.tech"><h3>The Rennko Cloud console</h3><p>The dashboard itself is a Rennko Cloud app, with its own auth and live data.</p></a>
+    </div>
+  </section>
+
+  <section>
+    <div class="cta-band">
+      <h2>Pick a name. Ship your app.</h2>
+      <p class="sub" style="margin:0 auto 1.6rem">It takes about a minute to go from nothing to a live app with a database.</p>
+      <a class="btn primary" data-console href="https://console.rennko.tech">Create a free project →</a>
+    </div>
+  </section>
+
+  <footer>Rennko Cloud is free and open source (MIT) · <a href="docs">Docs</a> · <a href="https://github.com/learningnihongo934-byte/RennkoCloud">GitHub</a> · <a href="https://rennko.tech">Rennko</a><br>Made by <b>Virat Reddy Kaukuntla</b></footer>
+</div>
+<script>
+  // On cloud.rennko.tech the console is console.rennko.tech; anywhere else (local dev) it's this host's root
+  const c = location.hostname.startsWith('cloud.') ? location.origin.replace('//cloud.', '//console.') : location.origin + '/';
+  document.querySelectorAll('[data-console]').forEach(a => { a.href = c; });
+</script>
+</body>
+</html>

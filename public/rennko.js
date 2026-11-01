@@ -465,9 +465,43 @@ class Auth {
   signUp(email, password, name) { return this._call('signup', { email, password, name }, !!this.user?.anon); }
   signIn(email, password) { return this._call('signin', { email, password }); }
   signInAnonymously() { return this._call('anon', {}); }
-  async signInWithGoogle(idToken) {
-    if (!idToken) idToken = await googlePrompt(this.app);
-    return this._call('google', { idToken });
+  // Popup sign-in. Resolves to { user, provider, providerToken, providerProfile }; providerToken is
+  // the GitHub/Google access token, for calling their APIs as the user. Call these from a click handler.
+  signInWithGitHub(opts) { return this._popup('github', 'signin', opts); }
+  linkWithGitHub(opts) { return this._popup('github', 'link', opts); }
+  // With a Google ID token (from your own Google button) this signs in directly; otherwise it opens a popup.
+  signInWithGoogle(idToken, opts) {
+    if (typeof idToken === 'string') return this._call('google', { idToken }, !!this.user?.anon);
+    return this._popup('google', 'signin', idToken || opts);
+  }
+  linkWithGoogle(opts) { return this._popup('google', 'link', opts); }
+  async unlink(provider) {
+    return this._set(await this.app.http('auth/unlink', { body: { provider, refreshToken: this.s?.refreshToken } }));
+  }
+  _popup(provider, mode, { scopes = [] } = {}) {
+    if (typeof window === 'undefined') return Promise.reject(err('unsupported', 'Popup sign-in needs a browser'));
+    const w = window.open('', 'rennko-oauth', 'popup,width=520,height=700');
+    if (!w) return Promise.reject(err('popup-blocked', 'The sign-in window was blocked. Allow pop-ups for this site and try again.'));
+    const appOrigin = new URL(this.app.url).origin;
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const finish = (f, v) => { if (!done) { done = true; clearInterval(timer); removeEventListener('message', onMsg); f(v); } };
+      const onMsg = async e => {
+        if (e.origin !== appOrigin || e.data?.type !== 'rennko-oauth') return;
+        clearInterval(timer);
+        if (e.data.error) return finish(reject, err(e.data.error.code, e.data.error.message));
+        const r = e.data.result;
+        try { await this._set(r); finish(resolve, { user: this.user, provider: r.provider, providerToken: r.providerToken, providerProfile: r.providerProfile }); }
+        catch (x) { finish(reject, x); }
+      };
+      addEventListener('message', onMsg);
+      const timer = setInterval(() => { if (w.closed) finish(reject, err('popup-closed', 'The sign-in window was closed')); }, 600);
+      (this.s ? this.getToken().catch(() => null) : Promise.resolve(null)).then(token => {
+        const q = new URLSearchParams({ origin: location.origin, mode, scopes: [].concat(scopes).join(' ') });
+        if (token) q.set('token', token);
+        w.location.href = `${this.app.url}/__/auth/oauth/${provider}?${q}`;
+      });
+    });
   }
   // Renders Google's own sign-in button into `el`; signs in when it's clicked.
   async renderGoogleButton(el, options = {}) {
@@ -496,16 +530,6 @@ function loadGsi() {
     document.head.appendChild(s);
   }));
 }
-async function googlePrompt(app) {
-  const { googleClientId } = await app.http('info', { method: 'GET', auth: false });
-  if (!googleClientId) throw err('failed-precondition', 'Add a Google client ID to this project in the console first');
-  await loadGsi();
-  return new Promise((res, rej) => {
-    google.accounts.id.initialize({ client_id: googleClientId, callback: r => res(r.credential) });
-    google.accounts.id.prompt(n => { if (n.isNotDisplayed?.() || n.isSkippedMoment?.()) rej(err('cancelled', 'Google sign-in was closed. Try auth.renderGoogleButton() instead.')); });
-  });
-}
-
 // ---- database ----
 class Db {
   constructor(app) { this.app = app; }

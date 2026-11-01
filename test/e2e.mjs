@@ -294,6 +294,58 @@ await t('admin SDK (console token) sees everything live', async () => {
   await waitFor(() => seen.includes(2), 5000, 'admin live update');
 });
 
+await t("can't-find screens and the website", async () => {
+  let r = await req('/p/nobody-here-' + stamp + '/');
+  eq(r.status, 404);
+  ok(String(r.d).includes('up for grabs') && String(r.d).includes('#/new?name=nobody-here-'), 'free name screen');
+  r = await req('/p/ab/');
+  ok(r.status === 404 && String(r.d).includes('a name we can host'), 'invalid name screen');
+  r = await req('/p/admin/');
+  ok(r.status === 404 && String(r.d).includes('reserved'), 'reserved name screen');
+  r = await req(`/p/${P}/definitely-missing`);
+  eq(r.status, 404, 'missing page in a deployed site still 404s');
+  ok(String((await req('/site/')).d).includes('free</em> backend'), 'website');
+  ok(String((await req('/site/docs')).d).includes('Security rules'), 'docs');
+});
+
+await t('GitHub sign-in setup, origin checks and hidden secrets', async () => {
+  const set = await req(`/p/${P}/__/admin/settings`, { method: 'PUT', token: tok1, body: { oauth: { github: { clientId: 'gh-client-123', clientSecret: 'shh-secret' } }, authorizedOrigins: ['https://myapp.example/path'] } });
+  eq(set.status, 200);
+  ok(!JSON.stringify(set.d).includes('shh-secret') && set.d.oauth.github.secretSet, 'secret never echoed');
+  ok(!JSON.stringify((await req(`/p/${P}/__/admin/info`, { token: tok1 })).d).includes('shh-secret'), 'not in info either');
+  eq((await req(`/p/${P}/__/info`)).d.providers, { github: true, google: false });
+  let r = await req(`/p/${P}/__/auth/oauth/github?origin=${encodeURIComponent(BASE)}&mode=signin`);
+  eq(r.status, 302);
+  const loc = new URL(r.r.headers.get('location'));
+  eq([loc.host, loc.searchParams.get('client_id'), loc.searchParams.get('redirect_uri')], ['github.com', 'gh-client-123', `${BASE}/p/${P}/__/auth/oauth/github/callback`]);
+  r = await req(`/p/${P}/__/auth/oauth/github?origin=${encodeURIComponent('https://myapp.example')}`);
+  eq(r.status, 302, 'authorized domain allowed');
+  r = await req(`/p/${P}/__/auth/oauth/github?origin=${encodeURIComponent('https://evil.example')}`);
+  ok(r.status === 200 && String(r.d).includes("isn't an authorized domain") && String(r.d).includes('target = null'), 'other sites get nothing');
+  r = await req(`/p/${P}/__/auth/oauth/github/callback?code=x&state=forged`);
+  ok(String(r.d).includes('expired') && String(r.d).includes('target = null'), 'forged state rejected');
+  r = await req(`/p/${P}/__/auth/oauth/github?origin=${encodeURIComponent(BASE)}&mode=link`);
+  ok(String(r.d).includes('Sign in before connecting'), 'link needs a user');
+  r = await req(`/p/${P}/__/auth/oauth/google?origin=${encodeURIComponent(BASE)}`);
+  ok(String(r.d).includes("isn't set up"), 'unconfigured provider');
+  await alice.auth.unlink('github');
+  eq(alice.auth.currentUser.providers, []);
+});
+
+await t('rules: hasOnly, hasAll and serverTimestamp == now', async () => {
+  const rules = { db: {
+    'reports/{id}': { read: 'auth != null', create: "data.uid == auth.uid && data.keys().hasOnly(['uid', 'n', 'at']) && data.at == now" },
+    'lsh/{b}': { read: 'auth != null', write: 'auth != null && (doc == null || data.repos.hasAll(doc.repos))' },
+  } };
+  eq((await req(`/p/${P}/__/admin/rules`, { method: 'PUT', body: rules, token: tok1 })).status, 200);
+  await alice.db.doc('reports/r1').set({ uid: aliceUid, n: 1, at: serverTimestamp() });
+  await rejects(alice.db.doc('reports/r2').set({ uid: aliceUid, n: 1, at: 5 }), 'permission-denied');
+  await rejects(alice.db.doc('reports/r3').set({ uid: aliceUid, n: 1, at: serverTimestamp(), extra: true }), 'permission-denied');
+  await alice.db.doc('lsh/b1').set({ repos: arrayUnion('a/b') }, { merge: true });
+  await alice.db.doc('lsh/b1').set({ repos: arrayUnion('c/d') }, { merge: true });
+  await rejects(alice.db.doc('lsh/b1').set({ repos: ['x/y'] }), 'permission-denied');
+});
+
 await t('deleting a project wipes it', async () => {
   const r = await req(`/v1/projects/${P}`, { method: 'DELETE', token: await dev2.auth.getToken() });
   eq(r.status, 404, 'not yours');

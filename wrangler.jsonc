@@ -16,6 +16,15 @@
     "MAX_FILE_MB": "25",
     "MAX_PROJECTS": "5"
   },
-  "routes": [{ "pattern": "*.rennko.tech/*", "zone_name": "rennko.tech" }],
+  // *.rennko.tech/* catches every project subdomain. Other Workers on the zone (like h.rennko.tech)
+  // need their own more specific "<host>/*" route, or this one wins. The custom domains create DNS records;
+  // other names need a proxied wildcard record (* AAAA 100::).
+  "routes": [
+    { "pattern": "*.rennko.tech/*", "zone_name": "rennko.tech" },
+    { "pattern": "console.rennko.tech", "custom_domain": true },
+    { "pattern": "cloud.rennko.tech", "custom_domain": true },
+    { "pattern": "skelr.rennko.tech", "custom_domain": true }
+  ],
+  "workers_dev": true,
   "observability": { "enabled": true }
 }

@@ -38,7 +38,7 @@ async function route() {
   await me.ready;
   if (!me.auth.currentUser) return renderAuth();
   const [, id, tab = 'overview'] = (location.hash.match(/^#\/p\/([^/]+)(?:\/(\w+))?/) || []);
-  if (!id) return renderProjects();
+  if (!id) return renderProjects(new URLSearchParams(location.hash.split('?')[1] || '').get('name') || '');
   return renderProject(id, tab);
 }
 
@@ -83,7 +83,7 @@ function shell(crumbs, body) {
 }
 
 // ---- projects ----
-async function renderProjects() {
+async function renderProjects(prefill = '') {
   shell('', `<div class="page-head"><h1>Your projects</h1></div><div class="grid" id="list"><div class="dim">Loading…</div></div>`);
   let projects;
   try { projects = (await platform('/projects')).projects; } catch (e) { return toast(e.message, true); }
@@ -94,6 +94,7 @@ async function renderProjects() {
       <form id="nf"><input id="nid" placeholder="my-app" pattern="[a-z][a-z0-9\\-]{1,28}[a-z0-9]" required aria-label="Project name"><button class="primary">Create</button></form>
       <div class="err" id="ne"></div></div>`;
   const nid = document.getElementById('nid');
+  if (prefill || location.hash.startsWith('#/new')) { nid.value = prefill.toLowerCase().replace(/[^a-z0-9-]/g, '-'); nid.focus(); }
   nid.oninput = () => { nid.value = nid.value.toLowerCase().replace(/[^a-z0-9-]/g, '-'); };
   document.getElementById('nf').onsubmit = async e => {
     e.preventDefault();
@@ -246,8 +247,22 @@ async function auth($t, p, admin, info) {
     <div class="page-head" style="margin:0"><h2>Users</h2><input id="q" placeholder="Search by email or uid" style="max-width:320px" aria-label="Search users"></div>
     <div class="table-wrap" id="users"><div class="dim">Loading…</div></div>
     <div class="card"><h2>Sign-in methods</h2>
-      <p class="small dim">Email/password and anonymous sign-in work out of the box. To add <b>Google</b>, make an OAuth client ID in the <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud console</a> (type "Web application", with your site's address as an authorized JavaScript origin), then paste it here.</p>
-      <div class="row"><input id="gid" placeholder="1234-abc.apps.googleusercontent.com" value="${esc(info.settings.googleClientId || '')}" aria-label="Google client ID"><button id="gsave" class="primary">Save</button></div>
+      <p class="small dim">Email/password and anonymous sign-in always work. For GitHub or Google, register an OAuth app and paste its client ID and secret here. Your app then calls <code>app.auth.signInWithGitHub()</code> or <code>signInWithGoogle()</code>.</p>
+      ${['github', 'google'].map(prov => {
+        const o = info.settings.oauth?.[prov] || {};
+        const name = prov === 'github' ? 'GitHub' : 'Google';
+        const help = prov === 'github'
+          ? 'Make one at <a href="https://github.com/settings/developers" target="_blank" rel="noopener">github.com/settings/developers</a> → New OAuth App.'
+          : 'Make one in the <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud console</a> → Create credentials → OAuth client ID → Web application.';
+        return `<h3 style="margin-top:1.2rem">${name} ${o.secretSet ? '<span class="badge live">ON</span>' : '<span class="badge">OFF</span>'}</h3>
+          <p class="small dim">${help} Use this as the callback / redirect URL:</p>
+          <div class="row"><input readonly value="${esc(p.url)}/__/auth/oauth/${prov}/callback" aria-label="${name} callback URL"><button data-copy="${esc(p.url)}/__/auth/oauth/${prov}/callback">Copy</button></div>
+          <div class="row" style="margin-top:.5rem"><input id="${prov}-id" placeholder="Client ID" value="${esc(o.clientId || '')}" aria-label="${name} client ID"><input id="${prov}-secret" type="password" placeholder="${o.secretSet ? 'Client secret (saved, leave blank to keep)' : 'Client secret'}" aria-label="${name} client secret"></div>`;
+      }).join('')}
+      <h3 style="margin-top:1.2rem">Authorized domains</h3>
+      <p class="small dim">Sites allowed to open the sign-in pop-up, one per line. ${esc(p.url)} and localhost are always allowed.</p>
+      <textarea id="origins" rows="3" placeholder="https://myapp.com" aria-label="Authorized domains">${esc((info.settings.authorizedOrigins || []).join('\n'))}</textarea>
+      <div class="row" style="margin-top:.8rem"><button id="gsave" class="primary">Save sign-in settings</button></div>
     </div>
   </div>`;
   const load = async () => {
@@ -264,9 +279,15 @@ async function auth($t, p, admin, info) {
   };
   let t;
   document.getElementById('q').oninput = () => { clearTimeout(t); t = setTimeout(load, 250); };
+  $t.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => { await navigator.clipboard.writeText(b.dataset.copy); toast('Copied'); });
   document.getElementById('gsave').onclick = async () => {
-    await admin('admin/settings', { method: 'PUT', body: { googleClientId: document.getElementById('gid').value } });
-    toast('Google sign-in saved');
+    const oauth = {};
+    for (const prov of ['github', 'google']) oauth[prov] = { clientId: document.getElementById(prov + '-id').value.trim(), clientSecret: document.getElementById(prov + '-secret').value.trim() };
+    try {
+      info.settings = await admin('admin/settings', { method: 'PUT', body: { oauth, authorizedOrigins: document.getElementById('origins').value.split(/\s+/).filter(Boolean) } });
+      toast('Sign-in settings saved');
+      auth($t, p, admin, info);
+    } catch (e) { toast(e.message, true); }
   };
   await load();
 }

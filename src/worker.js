@@ -3,8 +3,10 @@
 //   <host>/p/<id>/...           same, by path (local dev, workers.dev)
 //   console.rennko.tech/        the dashboard (static files in public/), its own auth at /__/
 //   console.rennko.tech/v1/...  platform API: create, list and delete projects
+//   cloud.rennko.tech/          the Rennko Cloud website (public/site/, or /site/ on other hosts)
 import { Project } from './project.js';
 import { verifyToken } from './crypto.js';
+import { screen } from './pages.js';
 
 export { Project };
 
@@ -33,6 +35,7 @@ export default {
     if (base && host === `www.${base}`) return Response.redirect(`https://${base}${url.pathname}${url.search}`, 301);
     const sub = base && host.endsWith(`.${base}`) ? host.slice(0, -base.length - 1) : host.endsWith('.localhost') ? host.slice(0, -10) : null;
 
+    if (sub === 'cloud') return site(req, env, url);
     if (sub && sub !== 'console') return toProject(req, env, ctx, sub, url.pathname, url.origin);
     const m = url.pathname.match(/^\/p\/([^/]+)(\/.*)?$/);
     if (m) {
@@ -54,8 +57,27 @@ function withCors(res) {
   return res;
 }
 
+// Where the console and the website live, as seen from this request
+function links(env, url) {
+  const base = env.BASE_DOMAIN;
+  const onBase = base && (url.hostname === base || url.hostname.endsWith(`.${base}`));
+  return { consoleUrl: onBase ? `https://console.${base}` : url.origin, siteUrl: onBase ? `https://cloud.${base}/` : `${url.origin}/site/` };
+}
+
+async function site(req, env, url) {
+  const res = await env.ASSETS.fetch(new Request(new URL('/site' + url.pathname + url.search, url), req));
+  const loc = res.headers.get('location');
+  if (loc?.startsWith('/site/')) return new Response(null, { status: res.status, headers: { location: loc.slice(5) } });
+  return res;
+}
+
 async function toProject(req, env, ctx, id, path, origin) {
-  if (id !== 'console' && !ID.test(id)) return new Response('Not found', { status: 404 });
+  const url = new URL(req.url);
+  const { consoleUrl, siteUrl } = links(env, url);
+  if (id !== 'console' && (!ID.test(id) || id.includes('--') || RESERVED.has(id))) {
+    if (path.startsWith('/__/')) return fail('not-found', `No project "${id}"`, 404);
+    return screen({ kind: RESERVED.has(id) ? 'reserved' : 'invalid', name: id, url: origin, home: origin + '/', consoleUrl, siteUrl });
+  }
   // The SDK is served from every project too, so apps can import '/__/rennko.js'
   if (path === '/__/rennko.js' || path === '/__/rennko-core.js') return withCors(await env.ASSETS.fetch(new Request(new URL(path.slice(3), req.url))));
   if (path === '/__/init.js') {
@@ -75,6 +97,8 @@ async function toProject(req, env, ctx, id, path, origin) {
   for (const k of [...headers.keys()]) if (k.startsWith('x-rk-')) headers.delete(k);
   headers.set('x-rk-project', id);
   headers.set('x-rk-origin', origin);
+  headers.set('x-rk-console', consoleUrl);
+  headers.set('x-rk-site', siteUrl);
   const target = new URL(path + new URL(req.url).search, 'https://project');
   let res = await stub(env, id).fetch(new Request(target, { method: req.method, headers, body: ['GET', 'HEAD'].includes(req.method) ? null : req.body, redirect: 'manual' }));
   if (res.status === 101) return res;

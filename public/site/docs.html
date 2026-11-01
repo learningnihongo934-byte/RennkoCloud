@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rennko Cloud Docs</title>
+  <meta name="description" content="How to use Rennko Cloud: setup, auth, the realtime database, offline sync, storage, hosting, security rules and the CLI.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23c2410c'/><path d='M16 6c1 5 7 7 7 13a7 7 0 0 1-14 0c0-3 2-5 3-6 0 3 1 4 2 4 0-4 0-8 2-11z' fill='%23fff'/></svg>">
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="logo" href="./"><svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M16 6c1 5 7 7 7 13a7 7 0 0 1-14 0c0-3 2-5 3-6 0 3 1 4 2 4 0-4 0-8 2-11z" fill="#fff"/></svg>Rennko Cloud</a>
+    <a href="docs">Docs</a>
+    <a class="hide-sm" href="https://github.com/learningnihongo934-byte/RennkoCloud">GitHub</a>
+    <a class="btn primary small" data-console href="https://console.rennko.tech">Open console</a>
+  </nav>
+
+  <div class="docs">
+    <aside class="toc">
+      <a href="#start">Get started</a><a href="#auth">Auth</a><a href="#db">Database</a><a href="#offline">Offline</a>
+      <a href="#storage">Storage</a><a href="#hosting">Hosting</a><a href="#rules">Security rules</a><a href="#cli">CLI</a>
+      <a href="#self-host">Run your own</a><a href="#limits">Limits</a>
+    </aside>
+    <article class="doc">
+      <h1>Rennko Cloud docs</h1>
+      <p>Rennko Cloud gives your app auth, a realtime database that works offline, file storage and hosting. If you've used Firebase, most of this will look familiar.</p>
+
+      <h2 id="start">Get started</h2>
+      <ol>
+        <li>Sign up in the <a data-console href="https://console.rennko.tech">console</a> and create a project, for example <code>my-app</code>. It lives at <code>https://my-app.rennko.tech</code>.</li>
+        <li>Import the SDK from your project. There's nothing to install:</li>
+      </ol>
+<pre><code>&lt;script type="module"&gt;
+  import { app } from 'https://my-app.rennko.tech/__/init.js'
+  // app.auth, app.db, app.storage are ready to use
+&lt;/script&gt;</code></pre>
+      <p>Using a bundler, or several projects? Import the SDK directly:</p>
+<pre><code>import { initApp, serverTimestamp, increment, arrayUnion, arrayRemove, deleteField } from 'https://console.rennko.tech/rennko.js'
+const app = initApp('https://my-app.rennko.tech')</code></pre>
+
+      <h2 id="auth">Auth</h2>
+<pre><code>await app.auth.signUp(email, password)          // also upgrades an anonymous user in place
+await app.auth.signIn(email, password)
+await app.auth.signInAnonymously()
+const { user, providerToken } = await app.auth.signInWithGitHub({ scopes: ['read:user'] })
+await app.auth.signInWithGoogle()
+await app.auth.linkWithGitHub()                  // add GitHub to the signed-in user
+await app.auth.unlink('github')
+app.auth.onAuthChange(user =&gt; { /* null when signed out; works offline */ })
+await app.auth.signOut()</code></pre>
+      <p><code>user</code> has <code>uid</code>, <code>email</code>, <code>name</code>, <code>photo</code>, <code>anon</code> and <code>providers</code> (the GitHub and Google accounts linked to it). <code>providerToken</code> is the GitHub or Google access token, so you can call their APIs as the user.</p>
+      <p class="note">To turn on GitHub or Google, open the console's <b>Authentication</b> tab. Register an OAuth app with the callback URL shown there, then paste its client ID and secret. Popup sign-in has to start from a click handler, or the browser blocks the popup.</p>
+
+      <h2 id="db">Database</h2>
+      <p>Data lives in <b>documents</b> (JSON objects up to 1 MB) inside <b>collections</b>. Paths alternate: <code>posts/abc</code>, <code>users/u1/notes/n1</code>.</p>
+<pre><code>const ref = app.db.doc('todos/abc')
+await ref.set({ text: 'hi', done: false, at: serverTimestamp() })
+await ref.set({ tags: ['x'] }, { merge: true })
+await ref.update({ count: increment(1), 'meta.seen': true, tags: arrayUnion('y') })
+await ref.delete()
+const snap = await ref.get()          // snap.exists, snap.data(), snap.metadata.fromCache
+
+const todos = app.db.collection('todos')
+const newRef = await todos.add({ text: 'buy milk' })
+const q = todos.where('done', '==', false).orderBy('at', 'desc').limit(20)
+const unsubscribe = q.onSnapshot(snap =&gt; {
+  for (const c of snap.docChanges()) console.log(c.type, c.doc.id, c.doc.data())
+})
+
+const batch = app.db.batch()          // all or nothing
+batch.set(app.db.doc('a/1'), { n: 1 }).delete(app.db.doc('a/2'))
+await batch.commit()</code></pre>
+      <p>Query operators: <code>== != &lt; &lt;= &gt; &gt;= in not-in array-contains array-contains-any</code>. Use the field <code>__id</code> for the document ID. You can also page with <code>.offset(n)</code>.</p>
+
+      <h2 id="offline">Offline</h2>
+      <p>Nothing to set up. In the browser the SDK keeps a copy of what you've read, plus a queue of your writes, in IndexedDB.</p>
+      <ul>
+        <li>Listeners fire right away from the cache. <code>snap.metadata.fromCache</code> and <code>hasPendingWrites</code> say what you're looking at.</li>
+        <li>Writes update every listener instantly. They sync when there's a connection, even after a reload or restart, and each one is applied exactly once.</li>
+        <li>A write's promise resolves when the server confirms it. In an offline-friendly UI, don't wait on it before updating the screen.</li>
+        <li><code>app.onConnectionChange(online =&gt; …)</code>, <code>app.disableNetwork()</code>, <code>app.enableNetwork()</code> and <code>app.waitForPendingWrites()</code> give you control.</li>
+      </ul>
+
+      <h2 id="storage">Storage</h2>
+<pre><code>const file = await app.storage.upload(`avatars/${user.uid}/me.png`, blob)
+img.src = file.url                        // a shareable link
+await app.storage.list(`avatars/${user.uid}/`)
+await app.storage.download(path)          // a Blob
+await app.storage.delete(path)</code></pre>
+      <p>Files can be up to 25 MB. Storage needs a connection.</p>
+
+      <h2 id="hosting">Hosting</h2>
+      <p>In the console's <b>Hosting</b> tab, drop your built site's folder (the one with <code>index.html</code>), or use the CLI. Turn on <i>Single-page app</i> for React/Vue routers, or <i>Clean URLs</i> to serve <code>/about</code> from <code>about.html</code>. A <code>404.html</code> becomes your not-found page.</p>
+
+      <h2 id="rules">Security rules</h2>
+      <p>Rules decide who can read and write. Edit them in the console's <b>Rules</b> tab, or deploy a <code>rules.json</code>:</p>
+<pre><code>{
+  "db": {
+    "users/{uid}/**": { "read": "auth.uid == uid", "write": "auth.uid == uid" },
+    "posts/{id}": {
+      "read": "true",
+      "create": "data.owner == auth.uid &amp;&amp; data.text.size() &lt; 500",
+      "update": "doc.owner == auth.uid &amp;&amp; data.owner == auth.uid",
+      "delete": "doc.owner == auth.uid"
+    }
+  },
+  "storage": {
+    "avatars/{uid}/**": { "read": "true", "write": "auth.uid == uid &amp;&amp; data.size &lt; 5000000", "delete": "auth.uid == uid" }
+  }
+}</code></pre>
+      <ul>
+        <li><code>{name}</code> matches one path segment. <code>**</code> matches the rest.</li>
+        <li>Actions: <code>read</code> (or <code>get</code>, <code>list</code>) and <code>write</code> (or <code>create</code>, <code>update</code>, <code>delete</code>). If <b>any</b> matching rule allows it, it's allowed.</li>
+        <li>Conditions can use:
+          <ul>
+            <li><code>auth</code>: <code>uid</code>, <code>email</code>, <code>anon</code> and <code>provider</code>, or <code>null</code> when signed out.</li>
+            <li><code>doc</code>: what's stored now.</li>
+            <li><code>data</code>: what's being written. It's <code>null</code> on delete. For files it has <code>size</code> and <code>type</code>.</li>
+            <li><code>now</code>, which equals <code>serverTimestamp()</code> values in the same write.</li>
+            <li>Your <code>{name}</code> variables.</li>
+          </ul>
+        </li>
+        <li>Operators: <code>== != &lt; &lt;= &gt; &gt;= &amp;&amp; || ! + - in</code>. Functions: <code>.size() .includes(x) .startsWith(s) .endsWith(s) .keys() .hasAll(list) .hasAny(list) .hasOnly(list)</code>.</li>
+        <li>Queries only return documents the user may <code>list</code>.</li>
+        <li>The console and the admin key skip rules.</li>
+      </ul>
+
+      <h2 id="cli">CLI</h2>
+<pre><code>npx github:learningnihongo934-byte/RennkoCloud login
+npx github:learningnihongo934-byte/RennkoCloud create my-app
+npx github:learningnihongo934-byte/RennkoCloud deploy --project my-app --dir dist --spa --rules rules.json</code></pre>
+      <p>Put <code>{ "project": "my-app", "dir": "dist", "spa": true, "rules": "rules.json" }</code> in a <code>rennko.json</code> to make plain <code>rennko deploy</code> work. In CI, set <code>RENNKO_ADMIN_KEY</code> (from the console's Overview tab) instead of logging in.</p>
+
+      <h2 id="self-host">Run your own</h2>
+      <p>Rennko Cloud is MIT-licensed and fits Cloudflare's free plan, with no card needed.</p>
+<pre><code>git clone https://github.com/learningnihongo934-byte/RennkoCloud &amp;&amp; cd RennkoCloud
+./build.sh          # everything on http://localhost:8787, works with no internet
+./build.sh test     # end-to-end tests
+./build.sh deploy   # to your Cloudflare account</code></pre>
+
+      <h2 id="limits">Limits</h2>
+      <ul>
+        <li><b>Per account:</b> 5 projects.</li>
+        <li><b>Per project:</b> 500 MB of storage.</li>
+        <li><b>Per file:</b> 25 MB.</li>
+        <li><b>Per document:</b> 1 MB.</li>
+        <li><b>Per query:</b> 1,000 documents.</li>
+      </ul>
+      <p>The whole service shares Cloudflare's free daily quota. Not included yet: email verification and password-reset emails, server functions, and count queries.</p>
+    </article>
+  </div>
+  <footer>Made by <b>Virat Reddy Kaukuntla</b> · <a href="./">Rennko Cloud</a> · <a href="https://rennko.tech">Rennko</a></footer>
+</div>
+<script>
+  const c = location.hostname.startsWith('cloud.') ? location.origin.replace('//cloud.', '//console.') : location.origin + '/';
+  document.querySelectorAll('[data-console]').forEach(a => { a.href = c; });
+</script>
+</body>
+</html>

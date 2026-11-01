@@ -5,7 +5,8 @@
 // An action is allowed if any matching pattern allows it. Actions: get/list fall back to read,
 // create/update/delete fall back to write. Expressions are a small safe language (no eval):
 // literals, auth, doc (stored data), data (incoming data), now, path variables,
-// == != < <= > >= && || ! + - in, a.b, a[b], and x.size() x.includes(y) x.startsWith(s) x.endsWith(s) x.keys().
+// == != < <= > >= && || ! + - in, a.b, a[b], and x.size() x.includes(y) x.startsWith(s) x.endsWith(s) x.keys()
+// x.hasAll(list) x.hasAny(list) x.hasOnly(list).
 
 export const DEFAULT_RULES = {
   db: { '**': { read: 'auth != null', write: 'auth != null' } },
@@ -151,6 +152,9 @@ const METHODS = {
   startsWith: (x, y) => typeof x === 'string' && x.startsWith(y),
   endsWith: (x, y) => typeof x === 'string' && x.endsWith(y),
   keys: x => (x && typeof x === 'object' ? Object.keys(x) : []),
+  hasAll: (x, ys) => Array.isArray(x) && Array.isArray(ys) && ys.every(y => x.some(v => eqv(v, y))),
+  hasAny: (x, ys) => Array.isArray(x) && Array.isArray(ys) && ys.some(y => x.some(v => eqv(v, y))),
+  hasOnly: (x, ys) => Array.isArray(x) && Array.isArray(ys) && x.every(v => ys.some(y => eqv(v, y))),
 };
 
 export function evaluate(n, env) {
