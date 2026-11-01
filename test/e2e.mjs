@@ -346,6 +346,56 @@ await t('rules: hasOnly, hasAll and serverTimestamp == now', async () => {
   await rejects(alice.db.doc('lsh/b1').set({ repos: ['x/y'] }), 'permission-denied');
 });
 
+await t('Rennko Cloud admin: domains, suspensions, bans, blocked names', async () => {
+  const boss = initApp({ url: BASE, storage: memoryStore() });
+  apps.push(boss);
+  await boss.auth.signUp('admin@test.dev', 'adminpass1');
+  ok(boss.auth.currentUser.platformAdmin, 'admin flag');
+  const bt = await boss.auth.getToken();
+  eq((await req('/v1/admin/overview', { token: tok1 })).status, 403, 'non-admins blocked');
+  const o = await req('/v1/admin/overview', { token: bt });
+  eq(o.status, 200);
+  const row = o.d.projects.find(p => p.id === P);
+  ok(row && row.ownerEmail === `dev1-${stamp}@test.dev` && row.usage.users >= 2, 'domain row with owner and usage');
+  ok(o.d.users.some(u => u.email === `dev2-${stamp}@test.dev`) && o.d.users.some(u => u.admin), 'developers listed');
+  eq((await req(`/p/${P}/__/admin/info`, { token: bt })).status, 200, 'admin manages any project');
+
+  // suspend and unsuspend a domain
+  eq((await req(`/v1/admin/projects/${P}/suspend`, { body: { reason: 'spam' }, token: bt })).status, 200);
+  let r = await req(`/p/${P}/`);
+  ok(r.status === 451 && String(r.d).includes('suspended'), 'suspended screen');
+  await rejects(alice.db.doc('reports/r1').get({ source: 'server' }), 'permission-denied');
+  eq((await req(`/p/${P}/__/admin/info`, { token: tok1 })).d.suspended.reason, 'spam', 'owner sees why');
+  eq((await req(`/p/${P}/__/admin/unsuspend`, { method: 'POST', body: {}, token: tok1 })).status, 403, 'owner cannot unsuspend');
+  eq((await req(`/v1/admin/projects/${P}/unsuspend`, { body: {}, token: bt })).status, 200);
+  ok((await alice.db.doc('reports/r1').get({ source: 'server' })).exists, 'back online');
+
+  // ban and unban a developer
+  const uid2 = dev2.auth.currentUser.uid, t2 = await dev2.auth.getToken();
+  eq((await req(`/v1/admin/users/${uid2}/ban`, { body: { disabled: true }, token: bt })).status, 200);
+  const again = initApp({ url: BASE, storage: memoryStore() });
+  apps.push(again);
+  await rejects(again.auth.signIn(`dev2-${stamp}@test.dev`, 'password2'), 'permission-denied');
+  eq((await req('/v1/projects', { body: { id: 'banned-' + stamp }, token: t2 })).status, 403, 'banned devs cannot create projects');
+  await dev2.auth._refresh();
+  eq(dev2.auth.currentUser, null, 'banned dev signed out');
+  eq((await req(`/v1/admin/users/${boss.auth.currentUser.uid}/ban`, { body: { disabled: true }, token: bt })).status, 412, 'admins cannot be banned');
+  eq((await req(`/v1/admin/users/${uid2}/ban`, { body: { disabled: false }, token: bt })).status, 200);
+  await dev2.auth.signIn(`dev2-${stamp}@test.dev`, 'password2');
+
+  // blocked names
+  eq((await req('/v1/admin/blocked-names', { method: 'PUT', body: { names: ['nope-' + stamp] }, token: bt })).status, 200);
+  eq((await req('/v1/projects', { body: { id: 'nope-' + stamp }, token: tok1 })).status, 409, 'blocked name');
+
+  // owners ban their own app's users
+  const v = open();
+  await v.auth.signInAnonymously();
+  eq((await req(`/p/${P}/__/admin/users/${v.auth.currentUser.uid}`, { method: 'PUT', body: { disabled: true }, token: tok1 })).status, 200);
+  await rejects(v.db.doc('reports/r1').get({ source: 'server' }), 'permission-denied');
+  const listed = (await req(`/p/${P}/__/admin/users?q=${v.auth.currentUser.uid}`, { token: tok1 })).d.users[0];
+  ok(listed.disabled, 'shown as banned');
+});
+
 await t('deleting a project wipes it', async () => {
   const r = await req(`/v1/projects/${P}`, { method: 'DELETE', token: await dev2.auth.getToken() });
   eq(r.status, 404, 'not yours');

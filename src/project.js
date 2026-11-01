@@ -59,7 +59,10 @@ export class Project extends DurableObject {
   get exists() {
     if (this._exists) return true;
     this._exists = this.sql.exec("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").toArray().length > 0 && !!this.meta('id');
-    if (this._exists) this.sql.exec(SCHEMA); // adds tables from newer versions
+    if (this._exists) {
+      this.sql.exec(SCHEMA); // adds tables from newer versions
+      try { this.sql.exec('SELECT disabled FROM users LIMIT 0'); } catch { this.sql.exec('ALTER TABLE users ADD COLUMN disabled INTEGER DEFAULT 0'); }
+    }
     return this._exists;
   }
   meta(k) {
@@ -76,6 +79,7 @@ export class Project extends DurableObject {
 
   init(id, owner) {
     this.sql.exec(SCHEMA);
+    this.sql.exec('ALTER TABLE users ADD COLUMN disabled INTEGER DEFAULT 0');
     this.setMeta('id', id);
     this.setMeta('owner', owner);
     this.setMeta('created', Date.now());
@@ -116,13 +120,21 @@ export class Project extends DurableObject {
     if (!tok) return null;
     const c = await verifyToken(this.env.SECRET, tok);
     if (!c) throw err('unauthenticated', 'Session expired or invalid, sign in again');
-    if (c.p === this.pid) return { uid: c.uid, email: c.email ?? null, anon: !!c.anon, provider: c.provider ?? null, name: c.name ?? null };
+    if (c.p === this.pid) {
+      // Deleted or banned users lose access right away, not when their token runs out
+      const u = this.sql.exec('SELECT disabled FROM users WHERE uid=?', c.uid).toArray()[0];
+      if (!u) throw err('unauthenticated', 'This account no longer exists');
+      if (u.disabled) throw err('permission-denied', 'This account has been disabled');
+      return { uid: c.uid, email: c.email ?? null, anon: !!c.anon, provider: c.provider ?? null, name: c.name ?? null };
+    }
+    // Rennko Cloud admins (sa) can manage every project; owners manage their own
+    if (c.p === 'console' && c.uid && c.sa === true) return { admin: true, platform: true, uid: c.uid };
     if (c.p === 'console' && c.uid && c.uid === this.meta('owner')) return { admin: true, uid: c.uid };
     throw err('permission-denied', 'That token is for a different project');
   }
 
   async authFrom(req) {
-    if (req.headers.get('x-rk-internal') === '1') return { admin: true, uid: 'internal' };
+    if (req.headers.get('x-rk-internal') === '1') return { admin: true, platform: true, uid: 'internal' };
     const key = req.headers.get('x-admin-key');
     if (key) {
       if (key !== this.meta('adminKey')) throw err('permission-denied', 'Wrong admin key');
@@ -139,6 +151,11 @@ export class Project extends DurableObject {
     if (route === 'info' && m === 'GET') {
       const s = this.meta('settings') || {};
       return json({ id: this.pid, googleClientId: s.googleClientId || s.oauth?.google?.clientId || null, providers: { github: !!s.oauth?.github?.clientSecret, google: !!s.oauth?.google?.clientSecret } });
+    }
+    // A suspended project only answers its owner and Rennko Cloud admins
+    if (this.meta('suspended') && !route.startsWith('admin/')) {
+      const a = route.startsWith('auth/') || route === 'ws' ? null : await this.authFrom(req).catch(() => null);
+      if (!a?.admin) throw err('permission-denied', 'This project has been suspended');
     }
     if (route === 'ws') return this.wsConnect(req);
 
@@ -173,7 +190,7 @@ export class Project extends DurableObject {
 
     if (route.startsWith('admin/')) {
       needAdmin();
-      return json(await this.adminRoute(route.slice(6), m, url, body));
+      return json(await this.adminRoute(route.slice(6), m, url, body, auth));
     }
 
     if (route.startsWith('registry/') && this.pid === 'console') {
@@ -292,16 +309,29 @@ export class Project extends DurableObject {
       { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' } });
   }
   user(uid) { return this.sql.exec('SELECT * FROM users WHERE uid=?', uid).toArray()[0]; }
+  // Rennko Cloud admins: console accounts whose email is in ADMIN_EMAILS. The first account to use
+  // an admin email is pinned to it, so a later account can't take the role over.
+  isPlatformAdmin(u) {
+    if (this.pid !== 'console' || !u.email) return false;
+    const list = String(this.env.ADMIN_EMAILS || '').toLowerCase().split(/[\s,]+/).filter(Boolean);
+    if (!list.includes(u.email)) return false;
+    const pins = this.meta('adminPins') || {};
+    if (!pins[u.email]) { pins[u.email] = u.uid; this.setMeta('adminPins', pins); }
+    return pins[u.email] === u.uid;
+  }
+
   async session(u, refresh) {
     const now = Date.now();
+    if (u.disabled) throw err('permission-denied', 'This account has been disabled');
     if (!refresh) {
       refresh = randomToken();
       this.sql.exec('INSERT INTO sessions(id, uid, expires) VALUES(?, ?, ?)', await sha256hex(refresh), u.uid, now + SESSION_DAYS * 864e5);
     }
     this.sql.exec('UPDATE users SET last=? WHERE uid=?', now, u.uid);
     if (Math.random() < 0.02) this.sql.exec('DELETE FROM sessions WHERE expires < ?', now);
-    const token = await signToken(this.env.SECRET, this.pid, { uid: u.uid, email: u.email, anon: u.provider === 'anonymous', provider: u.provider, name: u.name }, TOKEN_TTL);
-    return { user: this.pubUser(u), token, refreshToken: refresh, expiresIn: TOKEN_TTL };
+    const sa = this.isPlatformAdmin(u);
+    const token = await signToken(this.env.SECRET, this.pid, { uid: u.uid, email: u.email, anon: u.provider === 'anonymous', provider: u.provider, name: u.name, ...(sa && { sa: true }) }, TOKEN_TTL);
+    return { user: { ...this.pubUser(u), ...(sa && { platformAdmin: true }) }, token, refreshToken: refresh, expiresIn: TOKEN_TTL };
   }
 
   async authRoute(r, m, req, body) {
@@ -381,6 +411,11 @@ export class Project extends DurableObject {
       return this.session(u, refreshToken);
     }
     throw err('not-found', `Unknown endpoint /__/auth/${r}`);
+  }
+
+  setDisabled(uid, disabled) {
+    this.sql.exec('UPDATE users SET disabled=? WHERE uid=?', disabled ? 1 : 0, uid);
+    if (disabled) this.sql.exec('DELETE FROM sessions WHERE uid=?', uid);
   }
 
   deleteUser(uid) {
@@ -674,6 +709,7 @@ export class Project extends DurableObject {
   async serveSite(req, url) {
     if (req.method !== 'GET' && req.method !== 'HEAD') return new Response('Method not allowed', { status: 405 });
     const info = this.meta('hosting');
+    if (this.meta('suspended')) return this.screenFor(req, url, 'suspended');
     if (!info) return this.screenFor(req, url, 'empty');
     const cfg = info.config || {};
     let p;
@@ -701,11 +737,11 @@ export class Project extends DurableObject {
   }
 
   // ---- admin ----
-  async adminRoute(r, m, url, body) {
+  async adminRoute(r, m, url, body, auth) {
     if (r === 'info' && m === 'GET') {
       return {
         id: this.pid, owner: this.meta('owner'), created: this.meta('created'), adminKey: this.meta('adminKey'),
-        rules: this.rules(), settings: maskSettings(this.meta('settings') || {}), hosting: this.meta('hosting') || null, url: this.origin,
+        rules: this.rules(), settings: maskSettings(this.meta('settings') || {}), suspended: this.meta('suspended') || null, hosting: this.meta('hosting') || null, url: this.origin,
         usage: { bytes: this.sql.databaseSize, cap: this.cap(), users: this.count('users'), docs: this.count('docs'), files: this.count('files'), connections: this.ctx.getWebSockets().length },
       };
     }
@@ -734,9 +770,26 @@ export class Project extends DurableObject {
     if (r === 'users' && m === 'GET') {
       const q = url.searchParams.get('q') || '';
       const rows = this.sql.exec("SELECT * FROM users WHERE (? = '' OR email LIKE ? OR uid = ?) ORDER BY created DESC LIMIT ? OFFSET ?", q, `%${q}%`, q, Number(url.searchParams.get('limit')) || 100, Number(url.searchParams.get('offset')) || 0).toArray();
-      return { users: rows.map(u => ({ ...this.pubUser(u), last: u.last })), total: this.count('users') };
+      return { users: rows.map(u => ({ ...this.pubUser(u), last: u.last, disabled: !!u.disabled })), total: this.count('users') };
     }
     if (r.startsWith('users/') && m === 'DELETE') { this.deleteUser(r.slice(6)); return { ok: true }; }
+    if (r.startsWith('users/') && m === 'PUT') {
+      const { disabled } = await body();
+      this.setDisabled(r.slice(6), disabled);
+      return { ok: true };
+    }
+    // Suspending is for Rennko Cloud admins, not project owners
+    if ((r === 'suspend' || r === 'unsuspend') && m === 'POST') {
+      if (!auth?.platform) throw err('permission-denied', 'Only Rennko Cloud admins can do this');
+      if (r === 'suspend') {
+        this.setMeta('suspended', { at: Date.now(), reason: String((await body().catch(() => ({}))).reason || '').slice(0, 300) });
+        for (const ws of this.ctx.getWebSockets()) try { ws.close(1008, 'Project suspended'); } catch {}
+      } else {
+        const { onlyIf } = await body().catch(() => ({}));
+        if (!onlyIf || this.meta('suspended')?.reason === onlyIf) this.sql.exec("DELETE FROM meta WHERE k='suspended'");
+      }
+      return { ok: true };
+    }
     if (r === 'collections' && m === 'GET') return { collections: this.sql.exec('SELECT col AS name, COUNT(*) AS count FROM docs GROUP BY col ORDER BY col').toArray() };
     if (r === 'rotate-key' && m === 'POST') { const k = 'rk_' + randomToken(24); this.setMeta('adminKey', k); return { adminKey: k }; }
     if (r === 'wipe' && m === 'POST') {
@@ -753,12 +806,44 @@ export class Project extends DurableObject {
     if (r === 'add') {
       const { id, owner } = await body();
       if (this.sql.exec('SELECT 1 FROM registry WHERE id=?', id).toArray().length) throw err('already-exists', `The name "${id}" is taken`);
+      if ((this.meta('blockedNames') || []).includes(id)) throw err('already-exists', `"${id}" isn't available, pick another name`);
+      const owner_ = this.user(owner);
+      if (!owner_ || owner_.disabled) throw err('permission-denied', 'This account has been disabled');
       this.sql.exec('INSERT INTO registry(id, owner, created) VALUES(?, ?, ?)', id, owner, Date.now());
       return { ok: true };
     }
     if (r === 'list') return { projects: this.sql.exec('SELECT * FROM registry WHERE owner=? ORDER BY created', url.searchParams.get('owner')).toArray() };
     if (r === 'get') return { project: this.sql.exec('SELECT * FROM registry WHERE id=?', url.searchParams.get('id')).toArray()[0] || null };
     if (r === 'remove') { const { id } = await body(); this.sql.exec('DELETE FROM registry WHERE id=?', id); return { ok: true }; }
+    if (r === 'all') {
+      return { projects: this.sql.exec('SELECT r.id, r.owner, r.created, u.email AS ownerEmail, u.disabled AS ownerDisabled FROM registry r LEFT JOIN users u ON u.uid = r.owner ORDER BY r.created DESC').toArray() };
+    }
+    if (r === 'users') {
+      const rows = this.sql.exec('SELECT u.uid, u.email, u.created, u.last, u.disabled, (SELECT COUNT(*) FROM registry r WHERE r.owner = u.uid) AS projects FROM users u ORDER BY u.created DESC').toArray();
+      return { users: rows.map(u => ({ ...u, disabled: !!u.disabled, admin: this.isPlatformAdmin(u) })) };
+    }
+    if (r === 'ban') {
+      const { uid, disabled } = await body();
+      const u = this.user(uid);
+      if (!u) throw err('not-found', 'No such account');
+      if (disabled && this.isPlatformAdmin(u)) throw err('failed-precondition', "Admins can't be banned");
+      this.setDisabled(uid, disabled);
+      return { ok: true, projects: this.sql.exec('SELECT id FROM registry WHERE owner=?', uid).toArray().map(x => x.id) };
+    }
+    if (r === 'delete-user') {
+      const { uid } = await body();
+      const u = this.user(uid);
+      if (u && this.isPlatformAdmin(u)) throw err('failed-precondition', "Admins can't be deleted");
+      this.deleteUser(uid);
+      return { ok: true };
+    }
+    if (r === 'blocked') {
+      if (url.searchParams.has('set')) {
+        const { names } = await body();
+        this.setMeta('blockedNames', [...new Set((names || []).map(n => String(n).trim().toLowerCase()).filter(n => /^[a-z0-9-]{1,30}$/.test(n)))].slice(0, 500));
+      }
+      return { names: this.meta('blockedNames') || [] };
+    }
     throw err('not-found', 'Unknown registry call');
   }
 }

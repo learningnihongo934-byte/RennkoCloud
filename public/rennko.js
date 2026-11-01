@@ -454,7 +454,7 @@ class Auth {
     if (!this.s) return Promise.resolve();
     return (this._r ??= (async () => {
       try { await this._set(await this.app.http('auth/refresh', { body: { refreshToken: this.s.refreshToken }, auth: false })); }
-      catch (e) { if (e.code === 'unauthenticated') await this._set(null); }
+      catch (e) { if (e.code === 'unauthenticated' || e.code === 'permission-denied') await this._set(null); }
       finally { this._r = null; }
     })());
   }

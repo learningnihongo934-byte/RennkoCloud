@@ -148,6 +148,10 @@ async function platform(req, env, url) {
       return json(out({ id, created: Date.now() }), 201);
     });
   }
+  if (url.pathname.startsWith('/v1/admin/')) {
+    if (claims.sa !== true) return fail('permission-denied', 'Only Rennko Cloud admins can do this', 403);
+    return guard(() => admin(url.pathname.slice(10), req, call, out));
+  }
   const del = url.pathname.match(/^\/v1\/projects\/([a-z0-9-]+)$/);
   if (del && req.method === 'DELETE') {
     return guard(async () => {
@@ -159,6 +163,48 @@ async function platform(req, env, url) {
     });
   }
   return fail('not-found', 'Unknown endpoint', 404);
+}
+
+// Rennko Cloud admin API (console accounts listed in ADMIN_EMAILS)
+async function admin(path, req, call, out) {
+  const body = () => req.json().catch(() => ({}));
+  if (path === 'overview' && req.method === 'GET') {
+    const [{ projects }, { users }, { names }] = await Promise.all([call('console', 'registry/all', 'GET'), call('console', 'registry/users', 'GET'), call('console', 'registry/blocked', 'GET')]);
+    // Live numbers from each project (capped so one page load stays cheap)
+    const stats = await Promise.all(projects.slice(0, 200).map(p => call(p.id, 'admin/info', 'GET').catch(() => null)));
+    const list = projects.map((p, i) => ({
+      ...out(p), owner: p.owner, ownerEmail: p.ownerEmail, ownerDisabled: !!p.ownerDisabled,
+      usage: stats[i]?.usage || null, site: stats[i]?.hosting ? { version: stats[i].hosting.version, files: stats[i].hosting.files, at: stats[i].hosting.at } : null,
+      suspended: stats[i]?.suspended || null,
+    }));
+    const sum = k => list.reduce((s, p) => s + (p.usage?.[k] || 0), 0);
+    return json({ projects: list, users, blockedNames: names, totals: { projects: list.length, developers: users.length, bytes: sum('bytes'), appUsers: sum('users'), docs: sum('docs'), files: sum('files'), connections: sum('connections') } });
+  }
+  let m = path.match(/^projects\/([a-z0-9-]+)\/(suspend|unsuspend)$/);
+  if (m && req.method === 'POST') { await call(m[1], `admin/${m[2]}`, 'POST', await body()); return json({ ok: true }); }
+  m = path.match(/^projects\/([a-z0-9-]+)$/);
+  if (m && req.method === 'DELETE') {
+    await call(m[1], 'admin/wipe');
+    await call('console', 'registry/remove', 'POST', { id: m[1] });
+    return json({ ok: true });
+  }
+  m = path.match(/^users\/([\w-]+)\/ban$/);
+  if (m && req.method === 'POST') {
+    const { disabled = true, suspendProjects = false } = await body();
+    const r = await call('console', 'registry/ban', 'POST', { uid: m[1], disabled: !!disabled });
+    // Banning can suspend their projects; unbanning brings back only the ones the ban suspended
+    if (suspendProjects || !disabled) for (const id of r.projects) await call(id, `admin/${disabled ? 'suspend' : 'unsuspend'}`, 'POST', disabled ? { reason: 'Owner banned' } : { onlyIf: 'Owner banned' }).catch(() => {});
+    return json({ ok: true, projects: r.projects });
+  }
+  m = path.match(/^users\/([\w-]+)$/);
+  if (m && req.method === 'DELETE') {
+    const { projects } = await call('console', `registry/list?owner=${encodeURIComponent(m[1])}`, 'GET');
+    await call('console', 'registry/delete-user', 'POST', { uid: m[1] });
+    for (const p of projects) { await call(p.id, 'admin/wipe').catch(() => {}); await call('console', 'registry/remove', 'POST', { id: p.id }); }
+    return json({ ok: true, deletedProjects: projects.map(p => p.id) });
+  }
+  if (path === 'blocked-names' && req.method === 'PUT') return json(await call('console', 'registry/blocked?set=1', 'POST', await body()));
+  return fail('not-found', 'Unknown admin endpoint', 404);
 }
 
 function projectUrl(env, url, id) {

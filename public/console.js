@@ -37,6 +37,7 @@ async function route() {
   state.cleanup = [];
   await me.ready;
   if (!me.auth.currentUser) return renderAuth();
+  if (location.hash.startsWith('#/admin')) return renderAdmin((location.hash.match(/^#\/admin\/(\w+)/) || [])[1] || 'domains');
   const [, id, tab = 'overview'] = (location.hash.match(/^#\/p\/([^/]+)(?:\/(\w+))?/) || []);
   if (!id) return renderProjects(new URLSearchParams(location.hash.split('?')[1] || '').get('name') || '');
   return renderProject(id, tab);
@@ -75,6 +76,7 @@ function shell(crumbs, body) {
   <header class="top">
     <div class="crumbs"><a class="logo" href="#/">${LOGO}<span>Rennko Cloud</span></a>${crumbs}</div>
     <span class="who">${esc(me.auth.currentUser.email)}</span>
+    ${me.auth.currentUser.platformAdmin ? '<a class="btn" href="#/admin">Admin</a>' : ''}
     <button class="ghost" id="out">Sign out</button>
   </header>
   <main class="wrap">${body}</main>
@@ -112,7 +114,9 @@ async function renderProject(id, tab) {
   if (state.project?.id !== id) {
     state.papp?.close();
     const list = (await platform('/projects').catch(() => ({ projects: [] }))).projects;
-    const p = list.find(x => x.id === id);
+    let p = list.find(x => x.id === id);
+    // Rennko Cloud admins can open anyone's project
+    if (!p && me.auth.currentUser.platformAdmin) p = (await platform('/admin/overview').catch(() => ({ projects: [] }))).projects.find(x => x.id === id);
     if (!p) { toast(`No project "${id}"`, true); location.hash = '#/'; return; }
     state.project = p;
     state.papp = initApp({ url: p.url, token: () => me.auth.getToken(), persistence: false });
@@ -126,6 +130,7 @@ async function renderProject(id, tab) {
   const admin = (path, o) => call(p.url, '/__/' + path, o);
   try {
     state.info = await admin('admin/info');
+    if (state.info.suspended) $tab.insertAdjacentHTML('beforebegin', `<div class="card" style="border-color:var(--bad);margin-bottom:1rem"><b style="color:var(--bad)">This project is suspended.</b> <span class="dim">Its site and API are offline${state.info.suspended.reason ? ` (${esc(state.info.suspended.reason)})` : ''}. ${me.auth.currentUser.platformAdmin ? 'Unsuspend it in Settings.' : 'Contact Rennko Cloud if you think this is a mistake.'}</span></div>`);
     await ({ overview, database, auth, storage, hosting, rules, settings })[tab]?.($tab, p, admin, state.info);
   } catch (e) { $tab.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
 }
@@ -268,9 +273,16 @@ async function auth($t, p, admin, info) {
   const load = async () => {
     const { users, total } = await admin('admin/users?q=' + encodeURIComponent(document.getElementById('q').value));
     document.getElementById('users').innerHTML = users.length ? `<table><thead><tr><th>User</th><th>Provider</th><th>Created</th><th>Last sign-in</th><th>UID</th><th></th></tr></thead><tbody>${users.map(u => `
-      <tr><td>${u.email ? esc(u.email) : '<span class="dim">Anonymous</span>'}</td><td>${esc(u.provider)}</td><td>${fmtTime(u.created)}</td><td>${fmtTime(u.last)}</td><td class="mono">${esc(u.uid)}</td><td><button class="ghost danger small" data-del="${esc(u.uid)}">Delete</button></td></tr>`).join('')}</tbody></table><p class="small dim">${total} users in total</p>` : '<div class="card dim">No users yet.</div>';
+      <tr><td>${u.email ? esc(u.email) : '<span class="dim">Anonymous</span>'}</td><td>${esc(u.provider)}</td><td>${fmtTime(u.created)}</td><td>${fmtTime(u.last)}</td><td class="mono">${esc(u.uid)}</td><td class="row" style="flex-wrap:nowrap">${u.disabled ? '<span class="badge" style="color:var(--bad)">BANNED</span>' : ''}<button class="ghost small" data-ban="${esc(u.uid)}" data-on="${u.disabled ? '' : '1'}">${u.disabled ? 'Unban' : 'Ban'}</button><button class="ghost danger small" data-del="${esc(u.uid)}">Delete</button></td></tr>`).join('')}</tbody></table><p class="small dim">${total} users in total</p>` : '<div class="card dim">No users yet.</div>';
   };
   document.getElementById('users').onclick = async e => {
+    if (e.target.dataset.ban) {
+      const on = !!e.target.dataset.on;
+      if (on && !confirm('Ban this user? They are signed out right away and can\'t sign back in.')) return;
+      await admin('admin/users/' + e.target.dataset.ban, { method: 'PUT', body: { disabled: on } });
+      toast(on ? 'User banned' : 'User unbanned');
+      return load();
+    }
     const uid = e.target.dataset.del;
     if (!uid || !confirm('Delete this user? They are signed out everywhere. Their data stays.')) return;
     await admin('admin/users/' + uid, { method: 'DELETE' });
@@ -440,18 +452,100 @@ function settings($t, p, admin, info) {
   $t.innerHTML = `
   <div class="stack">
     <div class="card"><h2>Project</h2><p>ID <code>${esc(p.id)}</code> · created ${fmtTime(info.created)}</p></div>
+    ${me.auth.currentUser.platformAdmin ? `<div class="card"><h2>Rennko Cloud admin</h2>
+      <p class="small dim">${info.suspended ? `Suspended ${fmtTime(info.suspended.at)}${info.suspended.reason ? ` · ${esc(info.suspended.reason)}` : ''}` : 'This project is live.'}</p>
+      <div class="row">${info.suspended ? '<button class="primary" id="unsus">Unsuspend</button>' : '<input id="reason" placeholder="Reason (shown to the owner)" aria-label="Suspension reason"><button class="danger" id="sus">Suspend</button>'}</div></div>` : ''}
     <div class="card"><h2>Delete project</h2>
       <p class="small dim">Deletes all of this project's data, users, files and its site. This can't be undone. Type <b>${esc(p.id)}</b> to confirm.</p>
       <div class="row"><input id="conf" aria-label="Type the project name"><button class="danger" id="del">Delete forever</button></div>
     </div>
   </div>`;
+  const sus = async (action, reason) => { await platform(`/admin/projects/${p.id}/${action}`, { method: 'POST', body: { reason } }); toast(action === 'suspend' ? 'Project suspended' : 'Project is live again'); route(); };
+  document.getElementById('sus')?.addEventListener('click', () => sus('suspend', document.getElementById('reason').value));
+  document.getElementById('unsus')?.addEventListener('click', () => sus('unsuspend'));
   document.getElementById('del').onclick = async () => {
     if (document.getElementById('conf').value !== p.id) return toast(`Type ${p.id} to confirm`, true);
     try {
-      await platform('/projects/' + p.id, { method: 'DELETE' });
+      await platform((me.auth.currentUser.platformAdmin ? '/admin/projects/' : '/projects/') + p.id, { method: 'DELETE' });
       state.papp?.close(); state.project = null; state.papp = null;
       toast('Project deleted');
       location.hash = '#/';
     } catch (e) { toast(e.message, true); }
   };
+}
+
+// ---- Rennko Cloud admin ----
+async function renderAdmin(tab) {
+  if (!me.auth.currentUser.platformAdmin) { location.hash = '#/'; return; }
+  shell('<span class="dim">/</span><a href="#/admin">Admin</a>', `<div class="page-head"><h1>Rennko Cloud admin</h1><button id="refresh">Refresh</button></div><div id="adm"><div class="dim">Loading…</div></div>`);
+  document.getElementById('refresh').onclick = () => route();
+  let o;
+  try { o = await platform('/admin/overview'); } catch (e) { document.getElementById('adm').innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+  const t = o.totals;
+  const tabs = [['domains', `Domains (${t.projects})`], ['developers', `Developers (${t.developers})`], ['blocked', `Blocked names (${o.blockedNames.length})`]];
+  document.getElementById('adm').innerHTML = `
+    <div class="tiles">
+      <div class="tile"><div class="n">${t.projects}</div><div class="l">Domains</div></div>
+      <div class="tile"><div class="n">${t.developers}</div><div class="l">Developers</div></div>
+      <div class="tile"><div class="n">${t.appUsers}</div><div class="l">App users</div></div>
+      <div class="tile"><div class="n">${fmtBytes(t.bytes)}</div><div class="l">of 5 GB free plan</div><div class="bar"><i style="width:${Math.min(100, t.bytes / 5368709120 * 100).toFixed(1)}%"></i></div></div>
+      <div class="tile"><div class="n">${t.docs}</div><div class="l">Documents</div></div>
+      <div class="tile"><div class="n">${t.connections}</div><div class="l">Live connections</div></div>
+    </div>
+    <nav class="tabs">${tabs.map(([k, n]) => `<a href="#/admin/${k}" class="${k === tab ? 'on' : ''}">${n}</a>`).join('')}</nav>
+    <section id="atab"></section>`;
+  const $a = document.getElementById('atab');
+  const act = async (fn, msg) => { try { await fn(); toast(msg); route(); } catch (e) { toast(e.message, true); } };
+
+  if (tab === 'domains') {
+    $a.innerHTML = `<input id="q" placeholder="Search domains or owners" style="max-width:340px;margin-bottom:.8rem" aria-label="Search domains">
+      <div class="table-wrap"><table><thead><tr><th>Domain</th><th>Owner</th><th>Created</th><th>Storage</th><th>Users</th><th>Docs</th><th>Site</th><th>Status</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>`;
+    const draw = () => {
+      const q = document.getElementById('q').value.toLowerCase();
+      const rows = o.projects.filter(p => !q || p.id.includes(q) || (p.ownerEmail || '').toLowerCase().includes(q));
+      document.getElementById('rows').innerHTML = rows.map(p => `<tr>
+        <td><a href="${esc(p.url)}" target="_blank" rel="noopener"><b>${esc(p.id)}</b></a><div class="small dim">${esc(p.url.replace(/^https?:\/\//, ''))}</div></td>
+        <td>${esc(p.ownerEmail || '—')}${p.ownerDisabled ? ' <span class="badge" style="color:var(--bad)">BANNED</span>' : ''}</td>
+        <td>${fmtTime(p.created)}</td><td>${p.usage ? fmtBytes(p.usage.bytes) : '—'}</td><td>${p.usage?.users ?? '—'}</td><td>${p.usage?.docs ?? '—'}</td>
+        <td>${p.site ? `v${p.site.version} · ${p.site.files} files` : '<span class="dim">none</span>'}</td>
+        <td>${p.suspended ? '<span class="badge" style="color:var(--bad)">SUSPENDED</span>' : '<span class="badge live">LIVE</span>'}</td>
+        <td class="row" style="flex-wrap:nowrap"><a class="btn" href="#/p/${esc(p.id)}">Manage</a>
+          ${p.suspended ? `<button data-unsus="${esc(p.id)}">Unsuspend</button>` : `<button class="danger" data-sus="${esc(p.id)}">Suspend</button>`}
+          <button class="ghost danger" data-del="${esc(p.id)}">Delete</button></td></tr>`).join('') || '<tr><td colspan="9" class="dim">No domains yet.</td></tr>';
+    };
+    document.getElementById('q').oninput = draw;
+    draw();
+    $a.onclick = e => {
+      const d = e.target.dataset;
+      if (d.sus) { const reason = prompt(`Suspend ${d.sus}? Its site and API go offline. Reason (shown to the owner):`, ''); if (reason !== null) act(() => platform(`/admin/projects/${d.sus}/suspend`, { method: 'POST', body: { reason } }), `${d.sus} suspended`); }
+      if (d.unsus) act(() => platform(`/admin/projects/${d.unsus}/unsuspend`, { method: 'POST', body: {} }), `${d.unsus} is live again`);
+      if (d.del && prompt(`This deletes ${d.del} and all its data forever. Type ${d.del} to confirm.`) === d.del) act(() => platform(`/admin/projects/${d.del}`, { method: 'DELETE' }), `${d.del} deleted`);
+    };
+  }
+
+  if (tab === 'developers') {
+    $a.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Email</th><th>Joined</th><th>Last sign-in</th><th>Projects</th><th>Status</th><th></th></tr></thead><tbody>${o.users.map(u => `<tr>
+      <td>${esc(u.email || '—')}${u.admin ? ' <span class="badge live">ADMIN</span>' : ''}<div class="small dim mono">${esc(u.uid)}</div></td>
+      <td>${fmtTime(u.created)}</td><td>${fmtTime(u.last)}</td><td>${u.projects}</td>
+      <td>${u.disabled ? '<span class="badge" style="color:var(--bad)">BANNED</span>' : '<span class="badge">OK</span>'}</td>
+      <td class="row" style="flex-wrap:nowrap">${u.admin ? '' : u.disabled ? `<button data-unban="${esc(u.uid)}">Unban</button>` : `<button class="danger" data-ban="${esc(u.uid)}" data-n="${u.projects}">Ban</button>`}
+        ${u.admin ? '' : `<button class="ghost danger" data-del="${esc(u.uid)}" data-email="${esc(u.email)}" data-n="${u.projects}">Delete</button>`}</td></tr>`).join('')}</tbody></table></div>`;
+    $a.onclick = e => {
+      const d = e.target.dataset;
+      if (d.ban && confirm('Ban this developer? They are signed out and can\'t sign in or make projects.')) {
+        const suspendProjects = Number(d.n) > 0 && confirm(`Also suspend their ${d.n} project(s)?`);
+        act(() => platform(`/admin/users/${d.ban}/ban`, { method: 'POST', body: { disabled: true, suspendProjects } }), 'Developer banned');
+      }
+      if (d.unban) act(() => platform(`/admin/users/${d.unban}/ban`, { method: 'POST', body: { disabled: false } }), 'Developer unbanned');
+      if (d.del && prompt(`Delete ${d.email} and their ${d.n} project(s) forever? Type DELETE to confirm.`) === 'DELETE') act(() => platform(`/admin/users/${d.del}`, { method: 'DELETE' }), 'Developer deleted');
+    };
+  }
+
+  if (tab === 'blocked') {
+    $a.innerHTML = `<div class="card"><h2>Blocked names</h2>
+      <p class="small dim">Nobody can create a project with these names, one per line. Built-in reserved names like www, console and cloud are always blocked.</p>
+      <textarea id="bn" rows="10" class="code" aria-label="Blocked names">${esc(o.blockedNames.join('\n'))}</textarea>
+      <div class="row" style="margin-top:.6rem"><button class="primary" id="bsave">Save</button></div></div>`;
+    document.getElementById('bsave').onclick = () => act(() => platform('/admin/blocked-names', { method: 'PUT', body: { names: document.getElementById('bn').value.split(/\s+/).filter(Boolean) } }), 'Blocked names saved');
+  }
 }

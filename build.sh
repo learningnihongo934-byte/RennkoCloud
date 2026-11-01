@@ -21,7 +21,7 @@ case "${1:-dev}" in
     echo "  ok"
     PORT="${PORT:-8799}"
     rm -rf test/.tmp && mkdir -p test/.tmp
-    npx wrangler dev --port "$PORT" --local-upstream "localhost:$PORT" --persist-to test/.tmp/state > test/.tmp/server.log 2>&1 &
+    npx wrangler dev --port "$PORT" --local-upstream "localhost:$PORT" --var ADMIN_EMAILS:admin@test.dev --persist-to test/.tmp/state > test/.tmp/server.log 2>&1 &
     pid=$!
     trap 'kill $pid 2>/dev/null' EXIT
     for _ in $(seq 1 60); do curl -sf "http://localhost:$PORT/" >/dev/null && break; sleep 0.5; done

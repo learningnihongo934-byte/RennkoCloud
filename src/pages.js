@@ -43,13 +43,18 @@ export function screen({ kind, name, url, home, consoleUrl, siteUrl }) {
       p: 'Nothing is deployed here yet. Drop your site folder into the console\'s Hosting tab, or run <code>rennko deploy</code>, and it shows up right here.',
       btns: `<a class="btn primary" href="${esc(consoleUrl)}/#/p/${encodeURIComponent(name)}/hosting">Deploy a site →</a><a class="btn" href="${esc(siteUrl)}docs">Read the docs</a>`,
     },
+    suspended: {
+      big: '⛔', title: `${name} is suspended`, h1: 'This app has been suspended',
+      p: "It broke the Rennko Cloud rules, so it's offline for now. If it's yours, sign in to the console to see why.",
+      btns: `<a class="btn primary" href="${esc(consoleUrl)}">Open the console</a><a class="btn" href="${esc(siteUrl)}">What's Rennko Cloud?</a>`,
+    },
     missing: {
       big: '404', title: 'Page not found', h1: "This page doesn't exist",
       p: 'The site is here, but there\'s nothing at this address.',
       btns: `<a class="btn primary" href="${esc(home)}">Go to the home page</a>`,
     },
   }[kind];
-  const status = kind === 'empty' ? 200 : 404;
+  const status = kind === 'empty' ? 200 : kind === 'suspended' ? 451 : 404;
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(copy.title)}</title><meta name="robots" content="noindex">
 <link rel="icon" href="data:image/svg+xml,${encodeURIComponent(LOGO.replace('var(--accent)', '#c2410c'))}">
