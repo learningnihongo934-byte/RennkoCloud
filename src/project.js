@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS identities(provider TEXT, pid TEXT, uid TEXT, profile
 CREATE INDEX IF NOT EXISTS identities_uid ON identities(uid);
 CREATE TABLE IF NOT EXISTS registry(id TEXT PRIMARY KEY, owner TEXT, created INTEGER);
 CREATE INDEX IF NOT EXISTS registry_owner ON registry(owner);
+CREATE TABLE IF NOT EXISTS listings(id TEXT PRIMARY KEY, title TEXT, description TEXT, image TEXT, listed INTEGER DEFAULT 1, suspended INTEGER DEFAULT 0, has_site INTEGER DEFAULT 0, updated INTEGER);
+CREATE TABLE IF NOT EXISTS visits(day TEXT, id TEXT, n INTEGER, PRIMARY KEY(day, id));
 `;
 
 const STATUS = { 'invalid-argument': 400, unauthenticated: 401, 'permission-denied': 403, 'not-found': 404, 'already-exists': 409, 'failed-precondition': 412, 'payload-too-large': 413, 'resource-exhausted': 429 };
@@ -184,7 +186,7 @@ export class Project extends DurableObject {
       needAdmin();
       if (route === 'hosting/plan' && m === 'POST') return json(this.hostingPlan(await body()));
       if (route.startsWith('hosting/blob/') && m === 'PUT') return json(await this.hostingBlob(route.slice(13), await req.arrayBuffer()));
-      if (route === 'hosting/release' && m === 'POST') return json(this.hostingRelease(await body()));
+      if (route === 'hosting/release' && m === 'POST') return json(await this.hostingRelease(await body()));
       if (route === 'hosting/info' && m === 'GET') return json(this.meta('hosting') || null);
     }
 
@@ -686,7 +688,7 @@ export class Project extends DurableObject {
     await this.putBlob(buf, hash);
     return { ok: true };
   }
-  hostingRelease({ files, config = {} }) {
+  async hostingRelease({ files, config = {} }) {
     const clean = this.cleanSiteFiles(files);
     const missing = this.hostingPlan({ files: clean }).missing;
     if (missing.length) throw err('failed-precondition', `${missing.length} files were not uploaded yet`);
@@ -703,7 +705,28 @@ export class Project extends DurableObject {
       this.setMeta('hosting', info);
     });
     this.gc(old);
+    await this.pushListing({ has_site: 1, ...this.siteMeta() });
     return { ...info, url: this.origin };
+  }
+
+  // Title, description and preview image from the site's index.html, for Discover
+  siteMeta() {
+    const row = this.sql.exec("SELECT hash FROM site WHERE path='/index.html'").toArray()[0];
+    if (!row) return { title: null, description: null, image: null };
+    const html = new TextDecoder().decode(this.readBlob(row.hash).slice(0, 65536));
+    const attr = (re) => { const m = html.match(re); return m ? m[1].replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim() : null; };
+    const meta = name => attr(new RegExp(`<meta[^>]+(?:name|property)=["']${name}["'][^>]*content=["']([^"']*)["']`, 'i')) || attr(new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]*(?:name|property)=["']${name}["']`, 'i'));
+    const clip = (v, n) => (v ? v.replace(/\s+/g, ' ').slice(0, n) : null);
+    return { title: clip(attr(/<title[^>]*>([^<]*)<\/title>/i) || meta('og:title'), 80), description: clip(meta('description') || meta('og:description'), 200), image: clip(meta('og:image'), 500) };
+  }
+
+  // Keep this project's Discover listing (kept in the console project) up to date
+  async pushListing(fields = {}) {
+    if (this.pid === 'console') return;
+    const body = { id: this.pid, listed: this.meta('settings')?.discover === false ? 0 : 1, suspended: this.meta('suspended') ? 1 : 0, ...fields };
+    await this.env.PROJECT.get(this.env.PROJECT.idFromName('console')).fetch(new Request('https://project/__/registry/listing', {
+      method: 'POST', headers: { 'x-rk-project': 'console', 'x-rk-internal': '1', 'content-type': 'application/json' }, body: JSON.stringify(body),
+    })).catch(() => {});
   }
 
   async serveSite(req, url) {
@@ -763,8 +786,10 @@ export class Project extends DurableObject {
         if (!o.clientId) { delete s.oauth[p]; continue; }
         s.oauth[p] = { clientId: String(o.clientId).trim(), clientSecret: o.clientSecret ? String(o.clientSecret).trim() : s.oauth[p]?.clientSecret || null };
       }
+      if ('discover' in b) s.discover = !!b.discover;
       if (Array.isArray(b.authorizedOrigins)) s.authorizedOrigins = b.authorizedOrigins.map(o => { try { return new URL(String(o).trim()).origin; } catch { return null; } }).filter(Boolean).slice(0, 20);
       this.setMeta('settings', s);
+      if ('discover' in b) await this.pushListing();
       return maskSettings(s);
     }
     if (r === 'users' && m === 'GET') {
@@ -788,6 +813,7 @@ export class Project extends DurableObject {
         const { onlyIf } = await body().catch(() => ({}));
         if (!onlyIf || this.meta('suspended')?.reason === onlyIf) this.sql.exec("DELETE FROM meta WHERE k='suspended'");
       }
+      await this.pushListing();
       return { ok: true };
     }
     if (r === 'collections' && m === 'GET') return { collections: this.sql.exec('SELECT col AS name, COUNT(*) AS count FROM docs GROUP BY col ORDER BY col').toArray() };
@@ -814,9 +840,39 @@ export class Project extends DurableObject {
     }
     if (r === 'list') return { projects: this.sql.exec('SELECT * FROM registry WHERE owner=? ORDER BY created', url.searchParams.get('owner')).toArray() };
     if (r === 'get') return { project: this.sql.exec('SELECT * FROM registry WHERE id=?', url.searchParams.get('id')).toArray()[0] || null };
-    if (r === 'remove') { const { id } = await body(); this.sql.exec('DELETE FROM registry WHERE id=?', id); return { ok: true }; }
+    if (r === 'remove') {
+      const { id } = await body();
+      for (const t of ['registry', 'listings', 'visits']) this.sql.exec(`DELETE FROM ${t} WHERE id=?`, id);
+      return { ok: true };
+    }
     if (r === 'all') {
-      return { projects: this.sql.exec('SELECT r.id, r.owner, r.created, u.email AS ownerEmail, u.disabled AS ownerDisabled FROM registry r LEFT JOIN users u ON u.uid = r.owner ORDER BY r.created DESC').toArray() };
+      return { projects: this.sql.exec('SELECT r.id, r.owner, r.created, u.email AS ownerEmail, u.disabled AS ownerDisabled, v.n AS visitsToday FROM registry r LEFT JOIN users u ON u.uid = r.owner LEFT JOIN visits v ON v.id = r.id AND v.day = ? ORDER BY r.created DESC', url.searchParams.get('day') || '').toArray() };
+    }
+    if (r === 'visits') {
+      const { rows } = await body();
+      for (const [day, id, n] of rows || []) {
+        if (!this.sql.exec('SELECT 1 FROM registry WHERE id=?', id).toArray().length) continue;
+        this.sql.exec('INSERT INTO visits(day, id, n) VALUES(?, ?, ?) ON CONFLICT(day, id) DO UPDATE SET n = n + excluded.n', String(day), id, Math.max(0, Math.floor(Number(n) || 0)));
+      }
+      if (Math.random() < 0.02) this.sql.exec('DELETE FROM visits WHERE day < ?', new Date(Date.now() - 90 * 864e5).toISOString().slice(0, 10));
+      return { ok: true };
+    }
+    if (r === 'listing') {
+      const { id, ...f } = await body();
+      if (!this.sql.exec('SELECT 1 FROM registry WHERE id=?', id).toArray().length) return { ok: false };
+      const cur = this.sql.exec('SELECT * FROM listings WHERE id=?', id).toArray()[0] || { title: null, description: null, image: null, listed: 1, suspended: 0, has_site: 0 };
+      const v = { ...cur, ...f };
+      this.sql.exec('INSERT OR REPLACE INTO listings(id, title, description, image, listed, suspended, has_site, updated) VALUES(?, ?, ?, ?, ?, ?, ?, ?)',
+        id, v.title ?? null, v.description ?? null, v.image ?? null, v.listed ? 1 : 0, v.suspended ? 1 : 0, v.has_site ? 1 : 0, 'has_site' in f ? Date.now() : cur.updated ?? Date.now());
+      return { ok: true };
+    }
+    if (r === 'discover') {
+      const sites = this.sql.exec(`SELECT l.id, l.title, l.description, l.image, l.updated, COALESCE(v.n, 0) AS today,
+          (SELECT COALESCE(SUM(n), 0) FROM visits t WHERE t.id = l.id) AS total
+        FROM listings l JOIN registry r ON r.id = l.id LEFT JOIN users u ON u.uid = r.owner LEFT JOIN visits v ON v.id = l.id AND v.day = ?
+        WHERE l.listed = 1 AND l.suspended = 0 AND l.has_site = 1 AND COALESCE(u.disabled, 0) = 0
+        ORDER BY today DESC, total DESC, l.updated DESC LIMIT 300`, url.searchParams.get('day') || '').toArray();
+      return { sites };
     }
     if (r === 'users') {
       const rows = this.sql.exec('SELECT u.uid, u.email, u.created, u.last, u.disabled, (SELECT COUNT(*) FROM registry r WHERE r.owner = u.uid) AS projects FROM users u ORDER BY u.created DESC').toArray();

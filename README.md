@@ -8,6 +8,7 @@ A free, open-source, **offline-first** alternative to Firebase. It gives your ap
 - **File storage**: uploads with shareable links, protected by rules.
 - **Static hosting**: every project gets `https://<project>.rennko.tech`. Deploy by dragging a folder into the console or with `rennko deploy`.
 - **Security rules**: a small, safe expression language for who can read and write what.
+- **Discover**: a public list of hosted sites at https://cloud.rennko.tech/discover, ranked by today's visits, with a [Top 5 screen](https://cloud.rennko.tech/top). Owners can opt out in the console.
 - **Console**: a dashboard at **https://console.rennko.tech** for your projects, live data, users, files, hosting and rules.
 
 Everything runs on Cloudflare (Workers and SQLite Durable Objects) and fits the **free plan with no credit card**. Your apps keep running when your computer is off. The same code also runs fully offline on your laptop for development.

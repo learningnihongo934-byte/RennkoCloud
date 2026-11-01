@@ -35,6 +35,7 @@ export default {
     if (base && host === `www.${base}`) return Response.redirect(`https://${base}${url.pathname}${url.search}`, 301);
     const sub = base && host.endsWith(`.${base}`) ? host.slice(0, -base.length - 1) : host.endsWith('.localhost') ? host.slice(0, -10) : null;
 
+    if (url.pathname === '/v1/discover' && req.method === 'GET') return discover(env, ctx, url);
     if (sub === 'cloud') return site(req, env, url);
     if (sub && sub !== 'console') return toProject(req, env, ctx, sub, url.pathname, url.origin);
     const m = url.pathname.match(/^\/p\/([^/]+)(\/.*)?$/);
@@ -90,7 +91,7 @@ async function toProject(req, env, ctx, id, path, origin) {
   const cacheKey = !api && req.method === 'GET' && ttl > 0 ? new Request(req.url) : null;
   if (cacheKey) {
     const hit = await caches.default.match(cacheKey);
-    if (hit) return hit;
+    if (hit) return counted(req, env, ctx, id, origin, hit);
   }
 
   const headers = new Headers(req.headers);
@@ -108,6 +109,61 @@ async function toProject(req, env, ctx, id, path, origin) {
     res.headers.set('cache-control', `public, max-age=${ttl}`);
     ctx.waitUntil(caches.default.put(cacheKey, res.clone()));
   }
+  return counted(req, env, ctx, id, origin, res);
+}
+
+// ---- visits, for Discover ----
+// A visit is the first page of a hosted site someone loads in a day (a cookie on the site
+// remembers the day). Counts pile up in memory and go to the console project in one batch,
+// at most VISIT_FLUSH_MS (10 s) after the first visit in the batch.
+const today = () => new Date().toISOString().slice(0, 10);
+const BOT = /bot|crawl|spider|slurp|preview|curl|wget|python|headless|monitor|lighthouse|facebookexternalhit/i;
+let pending = new Map(), flushScheduled = false;
+
+function flushVisits(env) {
+  flushScheduled = false;
+  const rows = [...pending].map(([k, n]) => [...k.split('|'), n]);
+  pending = new Map();
+  if (!rows.length) return;
+  return stub(env, 'console').fetch(new Request('https://project/__/registry/visits', {
+    method: 'POST', headers: { 'x-rk-project': 'console', 'x-rk-internal': '1', 'content-type': 'application/json' }, body: JSON.stringify({ rows }),
+  })).catch(() => {});
+}
+
+function counted(req, env, ctx, id, origin, res) {
+  if (id === 'console' || req.method !== 'GET' || res.status !== 200 || !res.headers.get('etag') || !(res.headers.get('content-type') || '').startsWith('text/html')) return res;
+  if (BOT.test(req.headers.get('user-agent') || '')) return res;
+  const day = today();
+  if ((req.headers.get('cookie') || '').includes(`rk_seen=${day}`)) return res;
+  pending.set(`${day}|${id}`, (pending.get(`${day}|${id}`) || 0) + 1);
+  const wait = Number(env.VISIT_FLUSH_MS ?? 10000);
+  if (pending.size > 50 || wait <= 0) ctx.waitUntil(flushVisits(env));
+  else if (!flushScheduled) {
+    flushScheduled = true;
+    ctx.waitUntil(new Promise(r => setTimeout(r, wait)).then(() => flushVisits(env)));
+  }
+  res = new Response(res.body, res);
+  const path = new URL(origin).pathname.replace(/\/?$/, '/');
+  res.headers.append('set-cookie', `rk_seen=${day}; Path=${path}; Max-Age=172800; SameSite=Lax${origin.startsWith('https:') ? '; Secure' : ''}`);
+  return res;
+}
+
+// Public list of sites for the Discover page, most visited today first
+async function discover(env, ctx, url) {
+  const ttl = Math.min(30, Number(env.HOSTING_CACHE || 0));
+  const key = new Request(url.origin + '/v1/discover');
+  if (ttl) { const hit = await caches.default.match(key); if (hit) return hit; }
+  const day = today();
+  const r = await stub(env, 'console').fetch(new Request(`https://project/__/registry/discover?day=${day}`, { headers: { 'x-rk-project': 'console', 'x-rk-internal': '1' } }));
+  const { sites } = await r.json();
+  const list = sites.map(s => {
+    const site = projectUrl(env, url, s.id);
+    let image = null;
+    try { if (s.image) { const u = /^\/(?!\/)/.test(s.image) ? new URL(site + s.image) : new URL(s.image, site + '/'); if (/^https?:$/.test(u.protocol)) image = u.href; } } catch {}
+    return { id: s.id, url: site, title: s.title || s.id, description: s.description || '', image, today: s.today, total: s.total, updated: s.updated };
+  });
+  const res = json({ day, sites: list, top: list.slice(0, 5) });
+  if (ttl) { res.headers.set('cache-control', `public, max-age=${ttl}`); ctx.waitUntil(caches.default.put(key, res.clone())); }
   return res;
 }
 
@@ -169,16 +225,16 @@ async function platform(req, env, url) {
 async function admin(path, req, call, out) {
   const body = () => req.json().catch(() => ({}));
   if (path === 'overview' && req.method === 'GET') {
-    const [{ projects }, { users }, { names }] = await Promise.all([call('console', 'registry/all', 'GET'), call('console', 'registry/users', 'GET'), call('console', 'registry/blocked', 'GET')]);
+    const [{ projects }, { users }, { names }] = await Promise.all([call('console', `registry/all?day=${today()}`, 'GET'), call('console', 'registry/users', 'GET'), call('console', 'registry/blocked', 'GET')]);
     // Live numbers from each project (capped so one page load stays cheap)
     const stats = await Promise.all(projects.slice(0, 200).map(p => call(p.id, 'admin/info', 'GET').catch(() => null)));
     const list = projects.map((p, i) => ({
-      ...out(p), owner: p.owner, ownerEmail: p.ownerEmail, ownerDisabled: !!p.ownerDisabled,
+      ...out(p), owner: p.owner, ownerEmail: p.ownerEmail, ownerDisabled: !!p.ownerDisabled, visitsToday: p.visitsToday || 0,
       usage: stats[i]?.usage || null, site: stats[i]?.hosting ? { version: stats[i].hosting.version, files: stats[i].hosting.files, at: stats[i].hosting.at } : null,
       suspended: stats[i]?.suspended || null,
     }));
     const sum = k => list.reduce((s, p) => s + (p.usage?.[k] || 0), 0);
-    return json({ projects: list, users, blockedNames: names, totals: { projects: list.length, developers: users.length, bytes: sum('bytes'), appUsers: sum('users'), docs: sum('docs'), files: sum('files'), connections: sum('connections') } });
+    return json({ projects: list, users, blockedNames: names, totals: { projects: list.length, developers: users.length, bytes: sum('bytes'), appUsers: sum('users'), visitsToday: list.reduce((s, p) => s + p.visitsToday, 0), docs: sum('docs'), files: sum('files'), connections: sum('connections') } });
   }
   let m = path.match(/^projects\/([a-z0-9-]+)\/(suspend|unsuspend)$/);
   if (m && req.method === 'POST') { await call(m[1], `admin/${m[2]}`, 'POST', await body()); return json({ ok: true }); }

@@ -262,13 +262,33 @@ await t('hosting: CLI login and deploy, clean URLs, 404s, redeploy', async () =>
   eq(r.status, 404);
   ok(String(r.d).includes('Custom 404'));
   eq((await req(`/p/${P}`)).status, 301, 'adds trailing slash');
-  writeFileSync(join(site, 'index.html'), '<h1>Version two</h1>');
+  writeFileSync(join(site, 'index.html'), '<title>Demo &amp; Co</title><meta name="description" content="A test site"><meta property="og:image" content="/og.png"><h1>Version two</h1>');
   ok(cli('deploy', '--project', P, '--dir', site).includes('1 new or changed'), 'only changed files upload');
   ok(String((await req(`/p/${P}/`)).d).includes('Version two'));
   eq((await req(`/p/${P}/about`)).status, 404, 'clean urls now off');
   const init = await req(`/p/${P}/__/init.js`);
   ok(String(init.d).includes(`initApp({ url: "${BASE}/p/${P}" })`), 'init.js');
   eq((await req(`/p/${P}/__/rennko.js`)).status, 200);
+});
+
+await t('discover: daily visits, opt-out and the Top 5', async () => {
+  const site = async (headers = {}) => fetch(`${BASE}/p/${P}/`, { headers: { 'user-agent': 'Mozilla/5.0 (test)', ...headers } });
+  const todayOf = async () => { await sleep(250); const d = await (await fetch(`${BASE}/v1/discover`)).json(); return { d, me: d.sites.find(s => s.id === P) }; };
+  const before = (await todayOf()).me?.today ?? 0;
+  const r = await site();
+  const cookie = r.headers.get('set-cookie') || '';
+  ok(cookie.includes('rk_seen=') && cookie.includes(`Path=/p/${P}/`), 'visit cookie: ' + cookie);
+  await site({ cookie: cookie.split(';')[0] });
+  await site({ 'user-agent': 'Googlebot/2.1' });
+  let { d, me } = await todayOf();
+  eq(me?.today, before + 1, 'one visit per visitor per day, bots skipped');
+  eq([me.title, me.description, me.image], ['Demo & Co', 'A test site', `${BASE}/p/${P}/og.png`], 'listing from index.html');
+  ok(me.total >= me.today && me.url === `${BASE}/p/${P}` && d.top.some(s => s.id === P), 'listed and in the top');
+  eq((await req(`/p/${P}/__/admin/settings`, { method: 'PUT', body: { discover: false }, token: tok1 })).status, 200);
+  ok(!(await todayOf()).d.sites.some(s => s.id === P), 'hidden when opted out');
+  await req(`/p/${P}/__/admin/settings`, { method: 'PUT', body: { discover: true }, token: tok1 });
+  ok((await todayOf()).d.sites.some(s => s.id === P), 'back after opting in');
+  ok(String((await req('/site/discover')).d).includes('Top 5 today') && String((await req('/site/top')).d).includes('Top 5'), 'pages');
 });
 
 await t('console admin: users, collections, delete user', async () => {

@@ -92,7 +92,7 @@ footer{position:fixed;bottom:12px;left:0;right:0;text-align:center;font-size:13p
   <p>${copy.p}</p>
   <div class="btns">${copy.btns}</div>
 </main>
-<footer>Free hosting, database and auth for your apps · <a href="${esc(siteUrl)}">Rennko Cloud</a></footer>
+<footer>Free hosting, database and auth for your apps · <a href="${esc(siteUrl)}discover">Discover sites</a> · <a href="${esc(siteUrl)}">Rennko Cloud</a></footer>
 </body></html>`;
   return new Response(html, { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
 }

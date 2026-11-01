@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Discover · Rennko Cloud</title>
+  <meta name="description" content="Discover sites and apps built on Rennko Cloud, ranked by today's visits.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23c2410c'/><path d='M16 6c1 5 7 7 7 13a7 7 0 0 1-14 0c0-3 2-5 3-6 0 3 1 4 2 4 0-4 0-8 2-11z' fill='%23fff'/></svg>">
+  <link rel="stylesheet" href="site.css">
+  <style>
+    .disc-head { padding: 3rem 0 1.5rem; }
+    .stage { border-radius: 22px; padding: 1.4rem; margin-bottom: 2.5rem; color: #f4efe9; border: 1px solid #2f2a26;
+      background: radial-gradient(ellipse 70% 80% at 50% 120%, rgba(249,115,22,.32), transparent 70%), #121010; }
+    .stage-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .stage-head h2 { color: #fff; margin: 0; }
+    .stage-head a { color: #fdba74; font-weight: 700; text-decoration: none; }
+    .podium { display: grid; grid-template-columns: 1.4fr 1fr 1fr; grid-template-rows: auto auto; gap: .9rem; }
+    .podium .site { background: #1d1917; border-color: #362f2a; color: #f4efe9; }
+    .podium .site p, .podium .site .dom { color: #b5aca2; }
+    .podium .site:first-child { grid-row: span 2; }
+    .podium .site:first-child .thumb { aspect-ratio: 16 / 10; font-size: 4rem; }
+    .rank { position: absolute; top: .7rem; left: .7rem; z-index: 1; font-weight: 900; font-size: 13px; padding: .2rem .6rem; border-radius: 999px; background: #0f0d0c; color: #fdba74; border: 1px solid #4a3a2c; }
+    .podium .site:first-child .rank { font-size: 15px; background: linear-gradient(90deg, #f97316, #fdba74); color: #1a0f08; border: 0; }
+    .tools { display: flex; gap: .6rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .tools input, .tools select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: .55rem 1rem; }
+    .tools input { flex: 1; min-width: 200px; }
+    .sites { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; }
+    .site { position: relative; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; color: inherit; text-decoration: none; transition: transform .15s, border-color .15s; }
+    .site:hover { transform: translateY(-2px); border-color: var(--accent); }
+    .thumb { aspect-ratio: 16 / 9; display: grid; place-items: center; font-size: 2.6rem; font-weight: 900; color: #fff;
+      background: linear-gradient(135deg, hsl(var(--h) 75% 55%), hsl(calc(var(--h) + 40) 80% 40%)); overflow: hidden; }
+    .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .site .meta { padding: .8rem .95rem 1rem; display: flex; flex-direction: column; gap: .2rem; min-width: 0; }
+    .site b { font-size: 1.02rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .site .dom { font-family: var(--mono); font-size: 12.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .site p { margin: .2rem 0 0; font-size: 14px; color: var(--dim); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .visits { margin-top: .45rem; font-size: 13px; font-weight: 700; color: var(--accent); }
+    .podium .visits { color: #fdba74; }
+    .empty { text-align: center; padding: 3rem 1rem; color: var(--dim); border: 1px dashed var(--line); border-radius: 16px; }
+    @media (max-width: 860px) { .podium { grid-template-columns: 1fr 1fr; } .podium .site:first-child { grid-column: 1 / -1; grid-row: auto; } }
+    @media (max-width: 520px) { .podium { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="logo" href="./"><svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M16 6c1 5 7 7 7 13a7 7 0 0 1-14 0c0-3 2-5 3-6 0 3 1 4 2 4 0-4 0-8 2-11z" fill="#fff"/></svg>Rennko Cloud</a>
+    <a href="discover">Discover</a>
+    <a href="docs">Docs</a>
+    <a class="hide-sm" href="https://github.com/learningnihongo934-byte/RennkoCloud">GitHub</a>
+    <a class="btn primary small" data-console href="https://console.rennko.tech">Open console</a>
+  </nav>
+
+  <header class="disc-head">
+    <span class="eyebrow">Discover</span>
+    <h1>Sites built on <em>Rennko Cloud</em></h1>
+    <p class="lede">Apps, games and pages people host here for free, ranked by how many people visited them today.</p>
+  </header>
+
+  <section class="stage" aria-labelledby="top-title">
+    <div class="stage-head"><h2 id="top-title">🔥 Top 5 today</h2><a href="top">Open the Top 5 screen →</a></div>
+    <div class="podium" id="top"><div class="dim">Loading…</div></div>
+  </section>
+
+  <section style="padding-top:0">
+    <h2>Every site</h2>
+    <div class="tools">
+      <input id="q" type="search" placeholder="Search sites" aria-label="Search sites">
+      <select id="sort" aria-label="Sort sites"><option value="today">Most visited today</option><option value="total">Most visited ever</option><option value="new">Newest</option></select>
+    </div>
+    <div class="sites" id="all"></div>
+  </section>
+
+  <footer>Want your site here? <a data-console href="https://console.rennko.tech">Make a free project</a> and deploy it. Sites show up automatically, and owners can hide theirs in the console's Hosting tab.<br>Made by <b>Virat Reddy Kaukuntla</b> · <a href="./">Rennko Cloud</a></footer>
+</div>
+<script>
+  const c = location.hostname.startsWith('cloud.') ? location.origin.replace('//cloud.', '//console.') : location.origin + '/';
+  document.querySelectorAll('[data-console]').forEach(a => { a.href = c; });
+
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  const hue = id => [...id].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) % 360, 7);
+  const n = v => Number(v || 0).toLocaleString();
+  const card = (s, rank) => `<a class="site" href="${esc(s.url)}" target="_blank" rel="noopener">
+      ${rank ? `<span class="rank">#${rank}</span>` : ''}
+      <div class="thumb" style="--h:${hue(s.id)}">${s.image ? `<img src="${esc(s.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}${s.image ? '' : esc((s.title || s.id)[0].toUpperCase())}</div>
+      <div class="meta"><b>${esc(s.title)}</b><span class="dom">${esc(s.url.replace(/^https?:\/\//, ''))}</span>${s.description ? `<p>${esc(s.description)}</p>` : ''}
+      <span class="visits">🔥 ${n(s.today)} today · ${n(s.total)} all time</span></div></a>`;
+
+  let sites = [];
+  const draw = () => {
+    const q = document.getElementById('q').value.trim().toLowerCase();
+    const by = document.getElementById('sort').value;
+    const list = sites.filter(s => !q || [s.title, s.id, s.description].some(v => (v || '').toLowerCase().includes(q)))
+      .sort((a, b) => by === 'new' ? b.updated - a.updated : by === 'total' ? b.total - a.total : b.today - a.today || b.total - a.total);
+    document.getElementById('all').innerHTML = list.map(s => card(s)).join('') || `<div class="empty" style="grid-column:1/-1">${sites.length ? 'No sites match that search.' : 'No sites yet. Be the first!'}</div>`;
+  };
+  fetch('/v1/discover').then(r => r.json()).then(d => {
+    sites = d.sites;
+    document.getElementById('top').innerHTML = d.top.map((s, i) => card(s, i + 1)).join('') ||
+      `<div class="empty" style="grid-column:1/-1;border-color:#3a322c;color:#b5aca2">Nothing here yet. <a data-console href="${esc(c)}" style="color:#fdba74">Deploy the first site →</a></div>`;
+    draw();
+  }).catch(() => { document.getElementById('top').innerHTML = '<div class="empty">Couldn\'t load sites. Try again in a moment.</div>'; });
+  document.getElementById('q').oninput = draw;
+  document.getElementById('sort').onchange = draw;
+</script>
+</body>
+</html>

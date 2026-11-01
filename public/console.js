@@ -349,6 +349,7 @@ async function hosting($t, p, admin, info) {
       <div class="drop" id="drop">Drop a folder here, or <label class="btn" style="display:inline-flex;margin:0 .3rem">choose a folder<input type="file" id="pick" webkitdirectory multiple hidden></label></div>
       <label class="check"><input type="checkbox" id="spa" ${h?.config?.spa ? 'checked' : ''}> Single-page app (unknown paths serve <code>index.html</code>)</label>
       <label class="check"><input type="checkbox" id="clean" ${h?.config?.cleanUrls ? 'checked' : ''}> Clean URLs (<code>/about</code> serves <code>about.html</code>)</label>
+      <label class="check"><input type="checkbox" id="disc" ${info.settings.discover === false ? '' : 'checked'}> Show in Discover (ranked by today's visits, using your page's title, description and <code>og:image</code>)</label>
       <div class="log" id="log" hidden></div>
     </div>
     <div class="card"><h2>Deploy from the terminal</h2>
@@ -391,6 +392,10 @@ npx github:learningnihongo934-byte/RennkoCloud deploy --project ${esc(p.id)} --d
   };
   document.getElementById('pick').onchange = e => deploy([...e.target.files].map(f => ({ path: f.webkitRelativePath || f.name, file: f })));
   dropZone(document.getElementById('drop'), deploy);
+  document.getElementById('disc').onchange = async e => {
+    await admin('admin/settings', { method: 'PUT', body: { discover: e.target.checked } });
+    toast(e.target.checked ? 'Your site shows in Discover' : 'Hidden from Discover');
+  };
 }
 
 // Collects dropped files, walking into folders. Gives [{ path, file }].
@@ -491,6 +496,7 @@ async function renderAdmin(tab) {
       <div class="tile"><div class="n">${fmtBytes(t.bytes)}</div><div class="l">of 5 GB free plan</div><div class="bar"><i style="width:${Math.min(100, t.bytes / 5368709120 * 100).toFixed(1)}%"></i></div></div>
       <div class="tile"><div class="n">${t.docs}</div><div class="l">Documents</div></div>
       <div class="tile"><div class="n">${t.connections}</div><div class="l">Live connections</div></div>
+      <div class="tile"><div class="n">${t.visitsToday}</div><div class="l">Site visits today</div></div>
     </div>
     <nav class="tabs">${tabs.map(([k, n]) => `<a href="#/admin/${k}" class="${k === tab ? 'on' : ''}">${n}</a>`).join('')}</nav>
     <section id="atab"></section>`;
@@ -499,19 +505,19 @@ async function renderAdmin(tab) {
 
   if (tab === 'domains') {
     $a.innerHTML = `<input id="q" placeholder="Search domains or owners" style="max-width:340px;margin-bottom:.8rem" aria-label="Search domains">
-      <div class="table-wrap"><table><thead><tr><th>Domain</th><th>Owner</th><th>Created</th><th>Storage</th><th>Users</th><th>Docs</th><th>Site</th><th>Status</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>`;
+      <div class="table-wrap"><table><thead><tr><th>Domain</th><th>Owner</th><th>Created</th><th>Storage</th><th>Users</th><th>Docs</th><th>Visits today</th><th>Site</th><th>Status</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>`;
     const draw = () => {
       const q = document.getElementById('q').value.toLowerCase();
-      const rows = o.projects.filter(p => !q || p.id.includes(q) || (p.ownerEmail || '').toLowerCase().includes(q));
+      const rows = o.projects.filter(p => !q || p.id.includes(q) || (p.ownerEmail || '').toLowerCase().includes(q)).sort((a, b) => b.visitsToday - a.visitsToday || b.created - a.created);
       document.getElementById('rows').innerHTML = rows.map(p => `<tr>
         <td><a href="${esc(p.url)}" target="_blank" rel="noopener"><b>${esc(p.id)}</b></a><div class="small dim">${esc(p.url.replace(/^https?:\/\//, ''))}</div></td>
         <td>${esc(p.ownerEmail || '—')}${p.ownerDisabled ? ' <span class="badge" style="color:var(--bad)">BANNED</span>' : ''}</td>
-        <td>${fmtTime(p.created)}</td><td>${p.usage ? fmtBytes(p.usage.bytes) : '—'}</td><td>${p.usage?.users ?? '—'}</td><td>${p.usage?.docs ?? '—'}</td>
+        <td>${fmtTime(p.created)}</td><td>${p.usage ? fmtBytes(p.usage.bytes) : '—'}</td><td>${p.usage?.users ?? '—'}</td><td>${p.usage?.docs ?? '—'}</td><td>${p.visitsToday}</td>
         <td>${p.site ? `v${p.site.version} · ${p.site.files} files` : '<span class="dim">none</span>'}</td>
         <td>${p.suspended ? '<span class="badge" style="color:var(--bad)">SUSPENDED</span>' : '<span class="badge live">LIVE</span>'}</td>
         <td class="row" style="flex-wrap:nowrap"><a class="btn" href="#/p/${esc(p.id)}">Manage</a>
           ${p.suspended ? `<button data-unsus="${esc(p.id)}">Unsuspend</button>` : `<button class="danger" data-sus="${esc(p.id)}">Suspend</button>`}
-          <button class="ghost danger" data-del="${esc(p.id)}">Delete</button></td></tr>`).join('') || '<tr><td colspan="9" class="dim">No domains yet.</td></tr>';
+          <button class="ghost danger" data-del="${esc(p.id)}">Delete</button></td></tr>`).join('') || '<tr><td colspan="10" class="dim">No domains yet.</td></tr>';
     };
     document.getElementById('q').oninput = draw;
     draw();

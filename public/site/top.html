@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Today's Top 5 · Rennko Cloud</title>
+  <meta name="description" content="The five most visited sites on Rennko Cloud today.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23c2410c'/><path d='M16 6c1 5 7 7 7 13a7 7 0 0 1-14 0c0-3 2-5 3-6 0 3 1 4 2 4 0-4 0-8 2-11z' fill='%23fff'/></svg>">
+  <style>
+    :root { --bg: #0d0b0a; --text: #f4efe9; --dim: #a39a90; --accent: #f97316; --glow: #fdba74; --card: #1a1614; --line: #302924; color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body { min-height: 100vh; background: radial-gradient(ellipse 80% 50% at 50% 110%, rgba(249,115,22,.35), transparent 70%), var(--bg); color: var(--text);
+      font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; overflow-x: hidden; }
+    .embers span { position: fixed; bottom: -12px; border-radius: 50%; background: var(--glow); box-shadow: 0 0 10px var(--glow), 0 0 22px var(--accent); opacity: 0; animation: rise linear infinite; pointer-events: none; }
+    @keyframes rise { 0% { transform: translate(0, 0) scale(1); opacity: 0 } 8% { opacity: .9 } 100% { transform: translate(var(--dx), -108vh) scale(.2); opacity: 0 } }
+    main { position: relative; z-index: 1; max-width: 960px; margin: 0 auto; padding: 2.5rem 16px 4rem; }
+    header { text-align: center; margin-bottom: 2rem; }
+    .logo { display: inline-flex; align-items: center; gap: .5rem; color: var(--text); text-decoration: none; font-weight: 800; margin-bottom: 1rem; }
+    h1 { margin: 0; font-size: clamp(2.2rem, 7vw, 4rem); line-height: 1; letter-spacing: -.04em; }
+    h1 span { background: linear-gradient(180deg, var(--glow), var(--accent)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .date { color: var(--dim); margin-top: .6rem; }
+    ol { list-style: none; margin: 0; padding: 0; display: grid; gap: .9rem; }
+    li a { display: grid; grid-template-columns: 5.5rem 1fr auto; align-items: center; gap: 1.1rem; padding: 1rem 1.3rem; border-radius: 20px; text-decoration: none; color: inherit;
+      background: linear-gradient(90deg, rgba(249,115,22,var(--heat)), transparent 70%), var(--card); border: 1px solid var(--line); transition: transform .15s; }
+    li a:hover { transform: scale(1.01); border-color: var(--accent); }
+    li:first-child a { padding: 1.6rem 1.5rem; border-color: rgba(249,115,22,.55); box-shadow: 0 20px 60px -25px var(--accent); }
+    .num { font-size: 3.4rem; font-weight: 900; line-height: 1; letter-spacing: -.05em; text-align: center;
+      background: linear-gradient(180deg, var(--glow), var(--accent) 60%, rgba(249,115,22,.2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    li:first-child .num { font-size: 4.6rem; }
+    .who { min-width: 0; }
+    .who b { display: block; font-size: 1.35rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    li:first-child .who b { font-size: 1.8rem; }
+    .who span { font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--dim); }
+    .who p { margin: .25rem 0 0; color: var(--dim); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .count { text-align: right; }
+    .count b { display: block; font-size: 1.7rem; font-variant-numeric: tabular-nums; }
+    .count span { color: var(--dim); font-size: 13px; }
+    .bar { grid-column: 2 / -1; height: 5px; border-radius: 3px; background: #2a2420; overflow: hidden; }
+    .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--glow)); transition: width .8s ease; }
+    .empty { text-align: center; color: var(--dim); padding: 3rem 1rem; border: 1px dashed var(--line); border-radius: 20px; }
+    .foot { text-align: center; margin-top: 2rem; color: var(--dim); font-size: 14px; }
+    .foot a { color: var(--glow); font-weight: 700; text-decoration: none; }
+    @media (max-width: 560px) { li a { grid-template-columns: 3.4rem 1fr; } .count { grid-column: 2; text-align: left; } .count b { display: inline; font-size: 1.1rem; } .num { font-size: 2.4rem; } li:first-child .num { font-size: 3rem; } }
+    @media (prefers-reduced-motion: reduce) { .embers { display: none; } .bar i { transition: none; } }
+  </style>
+</head>
+<body>
+<div class="embers" aria-hidden="true" id="embers"></div>
+<main>
+  <header>
+    <a class="logo" href="./"><svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#f97316"/><path d="M16 6c1 5 7 7 7 13a7 7 0 0 1-14 0c0-3 2-5 3-6 0 3 1 4 2 4 0-4 0-8 2-11z" fill="#fff"/></svg>Rennko Cloud</a>
+    <h1>Today's <span>Top 5</span></h1>
+    <div class="date" id="date"></div>
+  </header>
+  <ol id="list" aria-live="polite"><li class="empty">Loading…</li></ol>
+  <p class="foot">Updates every minute · <a href="discover">See every site →</a></p>
+</main>
+<script>
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  let em = '';
+  for (let i = 0; i < 24; i++) em += `<span style="left:${Math.random() * 100}%;width:${3 + Math.random() * 5}px;height:${3 + Math.random() * 5}px;animation-duration:${6 + Math.random() * 9}s;animation-delay:${-Math.random() * 15}s;--dx:${(Math.random() - .5) * 160}px"></span>`;
+  document.getElementById('embers').innerHTML = em;
+  document.getElementById('date').textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+
+  async function load() {
+    try {
+      const d = await (await fetch('/v1/discover')).json();
+      const max = Math.max(1, ...d.top.map(s => s.today));
+      document.getElementById('list').innerHTML = d.top.map((s, i) => `<li><a href="${esc(s.url)}" target="_blank" rel="noopener" style="--heat:${(0.28 - i * 0.05).toFixed(2)}">
+        <div class="num">${i + 1}</div>
+        <div class="who"><b>${esc(s.title)}</b><span>${esc(s.url.replace(/^https?:\/\//, ''))}</span>${s.description ? `<p>${esc(s.description)}</p>` : ''}</div>
+        <div class="count"><b>${Number(s.today).toLocaleString()}</b><span>visits today</span></div>
+        <div class="bar"><i style="width:${(s.today / max * 100).toFixed(1)}%"></i></div></a></li>`).join('')
+        || '<li class="empty">No sites yet today. Deploy one and it could be #1.</li>';
+    } catch { document.getElementById('list').innerHTML = '<li class="empty">Couldn\'t load the Top 5. Retrying…</li>'; }
+  }
+  load();
+  setInterval(load, 60000);
+</script>
+</body>
+</html>
