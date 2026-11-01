@@ -104,7 +104,12 @@ export class Project extends DurableObject {
           const { owner } = await req.json();
           this.init(pid, owner);
           return json({ ok: true });
-        } else if (route === null) return this.screenFor(req, url, 'free', pid);
+        } else if (route === null) {
+          // A featured outside app keeps its <id>.rennko.tech name pointing at it
+          const feat = req.headers.get('x-rk-featured-url');
+          if (feat) return Response.redirect(feat, 302);
+          return this.screenFor(req, url, 'free', pid);
+        }
         else throw err('not-found', `No project "${pid}"`);
       }
       this.origin = req.headers.get('x-rk-origin') || url.origin;
@@ -851,11 +856,22 @@ export class Project extends DurableObject {
     if (r === 'visits') {
       const { rows } = await body();
       for (const [day, id, n] of rows || []) {
-        if (!this.sql.exec('SELECT 1 FROM registry WHERE id=?', id).toArray().length) continue;
+        if (!String(id).startsWith('x:') && !this.sql.exec('SELECT 1 FROM registry WHERE id=?', id).toArray().length) continue;
         this.sql.exec('INSERT INTO visits(day, id, n) VALUES(?, ?, ?) ON CONFLICT(day, id) DO UPDATE SET n = n + excluded.n', String(day), id, Math.max(0, Math.floor(Number(n) || 0)));
       }
       if (Math.random() < 0.02) this.sql.exec('DELETE FROM visits WHERE day < ?', new Date(Date.now() - 90 * 864e5).toISOString().slice(0, 10));
       return { ok: true };
+    }
+    if (r === 'visits-for') {
+      const day = url.searchParams.get('day') || '';
+      const visits = {};
+      for (const id of (url.searchParams.get('ids') || '').split(',').filter(Boolean).slice(0, 50)) {
+        visits[id] = {
+          today: this.sql.exec('SELECT COALESCE(SUM(n), 0) AS n FROM visits WHERE id=? AND day=?', id, day).one().n,
+          total: this.sql.exec('SELECT COALESCE(SUM(n), 0) AS n FROM visits WHERE id=?', id).one().n,
+        };
+      }
+      return { visits };
     }
     if (r === 'listing') {
       const { id, ...f } = await body();

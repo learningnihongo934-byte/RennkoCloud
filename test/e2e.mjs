@@ -288,6 +288,18 @@ await t('discover: daily visits, opt-out and the Top 5', async () => {
   ok(!(await todayOf()).d.sites.some(s => s.id === P), 'hidden when opted out');
   await req(`/p/${P}/__/admin/settings`, { method: 'PUT', body: { discover: true }, token: tok1 });
   ok((await todayOf()).d.sites.some(s => s.id === P), 'back after opting in');
+  // featured outside apps: listed, counted through the beacon, redirected, and reserved
+  let ext = (await todayOf()).d.sites.find(s => s.id === 'ext-app');
+  ok(ext && ext.featured && ext.url === 'https://example.com' && ext.title === 'Ext App', 'featured listed');
+  const b = await fetch(`${BASE}/v1/beacon/ext-app`, { headers: { 'user-agent': 'Mozilla/5.0 (test)' } });
+  eq([b.status, b.headers.get('content-type')], [200, 'image/gif']);
+  await fetch(`${BASE}/v1/beacon/ext-app`, { headers: { 'user-agent': 'Mozilla/5.0 (test)', cookie: (b.headers.get('set-cookie') || '').split(';')[0] } });
+  await fetch(`${BASE}/v1/beacon/ext-app`, { headers: { 'user-agent': 'Googlebot/2.1' } });
+  eq((await todayOf()).d.sites.find(s => s.id === 'ext-app').today, ext.today + 1, 'beacon counts once');
+  eq((await fetch(`${BASE}/v1/beacon/nope-${stamp}`)).status, 404);
+  const rd = await req('/p/ext-app/');
+  eq([rd.status, rd.r.headers.get('location')], [302, 'https://example.com/'], 'name redirects to the app');
+  eq((await req('/v1/projects', { body: { id: 'ext-app' }, token: tok1 })).status, 409, 'only admins can take a featured name');
   ok(String((await req('/site/discover')).d).includes('Top 5 today') && String((await req('/site/top')).d).includes('Top 5'), 'pages');
 });
 

@@ -21,6 +21,7 @@
     .podium .site:first-child .thumb { aspect-ratio: 16 / 10; font-size: 4rem; }
     .rank { position: absolute; top: .7rem; left: .7rem; z-index: 1; font-weight: 900; font-size: 13px; padding: .2rem .6rem; border-radius: 999px; background: #0f0d0c; color: #fdba74; border: 1px solid #4a3a2c; }
     .podium .site:first-child .rank { font-size: 15px; background: linear-gradient(90deg, #f97316, #fdba74); color: #1a0f08; border: 0; }
+    .feat { position: absolute; top: .7rem; right: .7rem; z-index: 1; font-size: 11px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; padding: .2rem .55rem; border-radius: 999px; background: rgba(15,13,12,.75); color: #fff; border: 1px solid rgba(255,255,255,.2); }
     .tools { display: flex; gap: .6rem; flex-wrap: wrap; margin-bottom: 1rem; }
     .tools input, .tools select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: .55rem 1rem; }
     .tools input { flex: 1; min-width: 200px; }
@@ -81,7 +82,7 @@
   const hue = id => [...id].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) % 360, 7);
   const n = v => Number(v || 0).toLocaleString();
   const card = (s, rank) => `<a class="site" href="${esc(s.url)}" target="_blank" rel="noopener">
-      ${rank ? `<span class="rank">#${rank}</span>` : ''}
+      ${rank ? `<span class="rank">#${rank}</span>` : ''}${s.featured ? '<span class="feat">Featured</span>' : ''}
       <div class="thumb" style="--h:${hue(s.id)}">${s.image ? `<img src="${esc(s.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}${s.image ? '' : esc((s.title || s.id)[0].toUpperCase())}</div>
       <div class="meta"><b>${esc(s.title)}</b><span class="dom">${esc(s.url.replace(/^https?:\/\//, ''))}</span>${s.description ? `<p>${esc(s.description)}</p>` : ''}
       <span class="visits">🔥 ${n(s.today)} today · ${n(s.total)} all time</span></div></a>`;

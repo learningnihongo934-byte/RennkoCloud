@@ -14,7 +14,14 @@
     // Free-plan guard rails: the whole Cloudflare account gets 5 GB of storage
     "PROJECT_CAP_MB": "500",
     "MAX_FILE_MB": "25",
-    "MAX_PROJECTS": "5"
+    "MAX_PROJECTS": "5",
+    // Apps that live outside Rennko Cloud but show in Discover. <id>.rennko.tech redirects to them,
+    // only admins can create a project with their id, and their visits count when their pages include
+    // <img src="https://cloud.rennko.tech/v1/beacon/<id>" alt="" width="1" height="1">
+    "FEATURED": [
+      { "id": "hyphenated", "url": "https://h.rennko.tech", "title": "Hyphenated", "description": "Short videos from the hyphenated generation. Watch, make and remix short videos, duet your friends and go live." },
+      { "id": "skelr", "url": "https://skelr.web.app", "title": "Skelr", "description": "Paste a GitHub repo and Skelr checks it against the rest of GitHub for copied code, tells you how confident it is, and shows the evidence." }
+    ]
   },
   // *.rennko.tech/* catches every project subdomain. Other Workers on the zone (like h.rennko.tech)
   // need their own more specific "<host>/*" route, or this one wins. The custom domains create DNS records;

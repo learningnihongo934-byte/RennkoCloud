@@ -36,6 +36,8 @@ export default {
     const sub = base && host.endsWith(`.${base}`) ? host.slice(0, -base.length - 1) : host.endsWith('.localhost') ? host.slice(0, -10) : null;
 
     if (url.pathname === '/v1/discover' && req.method === 'GET') return discover(env, ctx, url);
+    const bm = url.pathname.match(/^\/v1\/beacon\/([a-z0-9-]+)$/);
+    if (bm && req.method === 'GET') return beacon(req, env, ctx, bm[1]);
     if (sub === 'cloud') return site(req, env, url);
     if (sub && sub !== 'console') return toProject(req, env, ctx, sub, url.pathname, url.origin);
     const m = url.pathname.match(/^\/p\/([^/]+)(\/.*)?$/);
@@ -100,8 +102,13 @@ async function toProject(req, env, ctx, id, path, origin) {
   headers.set('x-rk-origin', origin);
   headers.set('x-rk-console', consoleUrl);
   headers.set('x-rk-site', siteUrl);
+  const feat = featured(env).find(f => f.id === id);
+  if (feat) headers.set('x-rk-featured-url', feat.url);
   const target = new URL(path + new URL(req.url).search, 'https://project');
-  let res = await stub(env, id).fetch(new Request(target, { method: req.method, headers, body: ['GET', 'HEAD'].includes(req.method) ? null : req.body, redirect: 'manual' }));
+  // Bodies are read in full first, so a project can answer early (say, a bad token) without
+  // leaving the upload stream half read
+  const body = ['GET', 'HEAD'].includes(req.method) || headers.get('upgrade') ? null : await req.arrayBuffer();
+  let res = await stub(env, id).fetch(new Request(target, { method: req.method, headers, body, redirect: 'manual' }));
   if (res.status === 101) return res;
   if (api) return withCors(res);
   if (cacheKey && res.status === 200) {
@@ -130,18 +137,45 @@ function flushVisits(env) {
   })).catch(() => {});
 }
 
-function counted(req, env, ctx, id, origin, res) {
-  if (id === 'console' || req.method !== 'GET' || res.status !== 200 || !res.headers.get('etag') || !(res.headers.get('content-type') || '').startsWith('text/html')) return res;
-  if (BOT.test(req.headers.get('user-agent') || '')) return res;
-  const day = today();
-  if ((req.headers.get('cookie') || '').includes(`rk_seen=${day}`)) return res;
-  pending.set(`${day}|${id}`, (pending.get(`${day}|${id}`) || 0) + 1);
+function countVisit(env, ctx, day, key) {
+  pending.set(`${day}|${key}`, (pending.get(`${day}|${key}`) || 0) + 1);
   const wait = Number(env.VISIT_FLUSH_MS ?? 10000);
   if (pending.size > 50 || wait <= 0) ctx.waitUntil(flushVisits(env));
   else if (!flushScheduled) {
     flushScheduled = true;
     ctx.waitUntil(new Promise(r => setTimeout(r, wait)).then(() => flushVisits(env)));
   }
+}
+
+// Featured sites (wrangler.jsonc FEATURED): outside apps listed in Discover
+function featured(env) {
+  try {
+    const list = typeof env.FEATURED === 'string' ? JSON.parse(env.FEATURED) : env.FEATURED;
+    return Array.isArray(list) ? list.filter(f => f && ID.test(f.id || '') && /^https?:\/\//.test(f.url || '')) : [];
+  } catch { return []; }
+}
+
+// Visit counter for featured sites: an invisible image they put on their pages
+const PIXEL = Uint8Array.from(atob('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'), c => c.charCodeAt(0));
+function beacon(req, env, ctx, id) {
+  if (!featured(env).some(f => f.id === id)) return new Response('Not found', { status: 404 });
+  const headers = { 'content-type': 'image/gif', 'cache-control': 'no-store', 'access-control-allow-origin': '*' };
+  const day = today();
+  const name = `rk_seen_${id.replace(/-/g, '_')}`;
+  if (!BOT.test(req.headers.get('user-agent') || '') && !(req.headers.get('cookie') || '').includes(`${name}=${day}`)) {
+    countVisit(env, ctx, day, `x:${id}`);
+    const secure = new URL(req.url).protocol === 'https:';
+    headers['set-cookie'] = `${name}=${day}; Path=/v1/beacon/${id}; Max-Age=172800; ${secure ? 'SameSite=None; Secure' : 'SameSite=Lax'}`;
+  }
+  return new Response(PIXEL, { headers });
+}
+
+function counted(req, env, ctx, id, origin, res) {
+  if (id === 'console' || req.method !== 'GET' || res.status !== 200 || !res.headers.get('etag') || !(res.headers.get('content-type') || '').startsWith('text/html')) return res;
+  if (BOT.test(req.headers.get('user-agent') || '')) return res;
+  const day = today();
+  if ((req.headers.get('cookie') || '').includes(`rk_seen=${day}`)) return res;
+  countVisit(env, ctx, day, id);
   res = new Response(res.body, res);
   const path = new URL(origin).pathname.replace(/\/?$/, '/');
   res.headers.append('set-cookie', `rk_seen=${day}; Path=${path}; Max-Age=172800; SameSite=Lax${origin.startsWith('https:') ? '; Secure' : ''}`);
@@ -162,6 +196,16 @@ async function discover(env, ctx, url) {
     try { if (s.image) { const u = /^\/(?!\/)/.test(s.image) ? new URL(site + s.image) : new URL(s.image, site + '/'); if (/^https?:$/.test(u.protocol)) image = u.href; } } catch {}
     return { id: s.id, url: site, title: s.title || s.id, description: s.description || '', image, today: s.today, total: s.total, updated: s.updated };
   });
+  // Featured outside apps join the list (a real project with the same id takes their place)
+  const ext = featured(env).filter(f => !list.some(s => s.id === f.id));
+  if (ext.length) {
+    const v = await (await stub(env, 'console').fetch(new Request(`https://project/__/registry/visits-for?day=${day}&ids=${ext.map(f => 'x:' + f.id).join(',')}`, { headers: { 'x-rk-project': 'console', 'x-rk-internal': '1' } }))).json();
+    for (const f of ext) {
+      const c = v.visits?.[`x:${f.id}`] || { today: 0, total: 0 };
+      list.push({ id: f.id, url: f.url.replace(/\/+$/, ''), title: f.title || f.id, description: f.description || '', image: f.image || null, today: c.today, total: c.total, updated: 0, featured: true });
+    }
+    list.sort((a, b) => b.today - a.today || b.total - a.total || b.updated - a.updated);
+  }
   const res = json({ day, sites: list, top: list.slice(0, 5) });
   if (ttl) { res.headers.set('cache-control', `public, max-age=${ttl}`); ctx.waitUntil(caches.default.put(key, res.clone())); }
   return res;
@@ -193,7 +237,7 @@ async function platform(req, env, url) {
   if (url.pathname === '/v1/projects' && req.method === 'POST') {
     const { id } = await req.json().catch(() => ({}));
     if (!ID.test(id || '') || id.includes('--')) return fail('invalid-argument', 'Project IDs are 3 to 30 lowercase letters, numbers and single hyphens, starting with a letter', 400);
-    if (RESERVED.has(id)) return fail('already-exists', `"${id}" is reserved, pick another name`, 409);
+    if (RESERVED.has(id) || (featured(env).some(f => f.id === id) && claims.sa !== true)) return fail('already-exists', `"${id}" is reserved, pick another name`, 409);
     return guard(async () => {
       const mine = (await call('console', `registry/list?owner=${encodeURIComponent(uid)}`, 'GET')).projects;
       const max = Number(env.MAX_PROJECTS || 5);
