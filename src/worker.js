@@ -188,7 +188,7 @@ async function platform(req, env, url) {
   const out = p => ({ id: p.id, created: p.created, url: projectUrl(env, url, p.id) });
 
   if (url.pathname === '/v1/projects' && req.method === 'GET') {
-    return guard(async () => json({ projects: (await call('console', `registry/list?owner=${encodeURIComponent(uid)}`, 'GET')).projects.map(out) }));
+    return guard(async () => json({ projects: (await call('console', `registry/list?owner=${encodeURIComponent(uid)}`, 'GET')).projects.map(out), limit: Number(env.MAX_PROJECTS || 5) }));
   }
   if (url.pathname === '/v1/projects' && req.method === 'POST') {
     const { id } = await req.json().catch(() => ({}));

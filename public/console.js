@@ -7,6 +7,10 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const LOGO = `<svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M16 6c1 5 7 7 7 13a7 7 0 0 1-14 0c0-3 2-5 3-6 0 3 1 4 2 4 0-4 0-8 2-11z" fill="var(--accent-ink)"/></svg>`;
 const fmtBytes = n => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`);
 const fmtTime = t => (t ? new Date(t).toLocaleString() : '—');
+const fmtDate = t => (t ? new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—');
+const hue = id => [...id].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
+// The Rennko Cloud website: cloud.rennko.tech next to console.rennko.tech, or /site/ locally
+const SITE = location.hostname.startsWith('console.') ? location.origin.replace('//console.', '//cloud.') + '/' : location.origin + '/site/';
 
 function toast(msg, bad) {
   const el = document.createElement('div');
@@ -74,7 +78,8 @@ function renderAuth(mode = 'signin') {
 function shell(crumbs, body) {
   $app.innerHTML = `
   <header class="top">
-    <div class="crumbs"><a class="logo" href="#/">${LOGO}<span>Rennko Cloud</span></a>${crumbs}</div>
+    <div class="crumbs"><a class="logo" href="${SITE}" title="Rennko Cloud home">${LOGO}<span>Rennko Cloud</span></a><span class="dim">/</span><a href="#/">Projects</a>${crumbs}</div>
+    <nav class="topnav"><a href="${SITE}discover">Discover</a><a href="${SITE}docs">Docs</a></nav>
     <span class="who">${esc(me.auth.currentUser.email)}</span>
     ${me.auth.currentUser.platformAdmin ? '<a class="btn" href="#/admin">Admin</a>' : ''}
     <button class="ghost" id="out">Sign out</button>
@@ -85,26 +90,93 @@ function shell(crumbs, body) {
 }
 
 // ---- projects ----
+const RESERVED = new Set('www console cloud api app apps admin auth login docs help support status blog mail h p rennko'.split(' '));
+const greeting = () => { const h = new Date().getHours(); return h < 5 ? 'Up late' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; };
+
 async function renderProjects(prefill = '') {
-  shell('', `<div class="page-head"><h1>Your projects</h1></div><div class="grid" id="list"><div class="dim">Loading…</div></div>`);
-  let projects;
-  try { projects = (await platform('/projects')).projects; } catch (e) { return toast(e.message, true); }
-  document.getElementById('list').innerHTML = projects.map(p => `
-    <a class="card" href="#/p/${esc(p.id)}"><h2>${esc(p.id)}</h2><div class="url">${esc(p.url)}</div></a>`).join('') + `
-    <div class="card new-card"><h2>New project</h2>
-      <div class="dim small">Pick a name for <b>name.rennko.tech</b></div>
-      <form id="nf"><input id="nid" placeholder="my-app" pattern="[a-z][a-z0-9\\-]{1,28}[a-z0-9]" required aria-label="Project name"><button class="primary">Create</button></form>
-      <div class="err" id="ne"></div></div>`;
-  const nid = document.getElementById('nid');
-  if (prefill || location.hash.startsWith('#/new')) { nid.value = prefill.toLowerCase().replace(/[^a-z0-9-]/g, '-'); nid.focus(); }
-  nid.oninput = () => { nid.value = nid.value.toLowerCase().replace(/[^a-z0-9-]/g, '-'); };
+  shell('', `
+    <section class="welcome">
+      <div><p class="hello">${greeting()} 👋</p><h1>Your projects</h1>
+        <p class="dim">Every project gets free hosting, a realtime database, sign-in and file storage, and keeps working offline.</p></div>
+      <div class="quota" id="quota"></div>
+    </section>
+    <section class="card create">
+      <div><h2>Create a project</h2><p class="dim small">Pick a name. Your app goes live at its own address in a few seconds.</p></div>
+      <form id="nf" class="create-form">
+        <label class="urlbox" for="nid"><span class="dim">https://</span><input id="nid" placeholder="my-app" autocomplete="off" spellcheck="false" maxlength="30" required aria-label="Project name"><span class="dim">.rennko.tech</span></label>
+        <button class="primary big" id="nbtn">Create project →</button>
+      </form>
+      <div class="hint" id="hint">3 to 30 lowercase letters, numbers and hyphens, starting with a letter.</div>
+    </section>
+    <section><div class="section-title"><h2>Projects</h2><span class="dim small" id="count"></span></div><div class="pgrid" id="list"><div class="dim">Loading…</div></div></section>
+    <section class="resources">
+      <a class="card res" href="${SITE}docs"><span class="ri">📘</span><b>Read the docs</b><span class="dim small">Auth, database, offline, rules and hosting in one page.</span></a>
+      <a class="card res" href="${SITE}discover"><span class="ri">🧭</span><b>Discover</b><span class="dim small">See what people host on Rennko Cloud.</span></a>
+      <a class="card res" href="${SITE}top"><span class="ri">🔥</span><b>Today's Top 5</b><span class="dim small">The most visited sites today.</span></a>
+      <a class="card res" href="https://github.com/learningnihongo934-byte/RennkoCloud" target="_blank" rel="noopener"><span class="ri">⭐</span><b>GitHub</b><span class="dim small">Open source. Run your own copy for free.</span></a>
+    </section>`);
+
+  // Create form: live address preview, format and availability checks
+  const nid = document.getElementById('nid'), hint = document.getElementById('hint'), btn = document.getElementById('nbtn');
+  const ID = /^[a-z][a-z0-9-]{1,28}[a-z0-9]$/;
+  let checkT, checkFor = '';
+  const setHint = (msg, cls = '') => { hint.textContent = msg; hint.className = 'hint ' + cls; };
+  const check = () => {
+    const v = nid.value;
+    clearTimeout(checkT);
+    checkFor = v; // answers for anything typed earlier are ignored
+    if (!v) return setHint('3 to 30 lowercase letters, numbers and hyphens, starting with a letter.');
+    if (!ID.test(v) || v.includes('--')) return setHint(v.length < 3 ? 'Keep going: at least 3 characters.' : 'Start with a letter, end with a letter or number, no double hyphens.', 'bad');
+    if (RESERVED.has(v)) return setHint(`"${v}" is reserved. Try another name.`, 'bad');
+    setHint('Checking…');
+    checkT = setTimeout(async () => {
+      const base = location.hostname.startsWith('console.') ? `https://${v}.${location.hostname.slice(8)}` : `${location.origin}/p/${v}`;
+      const r = await fetch(base + '/__/info').catch(() => null);
+      if (checkFor !== v) return;
+      if (r?.ok) setHint(`${v}.rennko.tech is taken.`, 'bad');
+      else setHint(`✓ ${v}.rennko.tech is available`, 'ok');
+    }, 300);
+  };
+  nid.oninput = () => { nid.value = nid.value.toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 30); check(); };
+  if (prefill || location.hash.startsWith('#/new')) { nid.value = prefill.toLowerCase().replace(/[^a-z0-9-]/g, '-'); nid.focus(); check(); }
   document.getElementById('nf').onsubmit = async e => {
     e.preventDefault();
+    btn.disabled = true;
     try {
       const p = await platform('/projects', { method: 'POST', body: { id: nid.value } });
       location.hash = `#/p/${p.id}`;
-    } catch (x) { document.getElementById('ne').textContent = x.message; }
+    } catch (x) { setHint(x.message, 'bad'); btn.disabled = false; }
   };
+
+  let data;
+  try { data = await platform('/projects'); } catch (e) { return toast(e.message, true); }
+  const { projects, limit = 5 } = data;
+  document.getElementById('quota').innerHTML = `<div class="n">${projects.length}<span>/${limit}</span></div><div class="bar"><i style="width:${Math.min(100, projects.length / limit * 100)}%"></i></div><div class="dim small">free projects used</div>`;
+  document.getElementById('count').textContent = projects.length ? `${projects.length} project${projects.length === 1 ? '' : 's'}` : '';
+  if (projects.length >= limit) { nid.disabled = btn.disabled = true; setHint(`You've used all ${limit} free projects. Delete one in its Settings tab to make room.`, 'bad'); }
+  const list = document.getElementById('list');
+  if (!projects.length) {
+    list.innerHTML = `<div class="card empty-state"><h3>Your first app is a minute away</h3>
+      <ol class="steps"><li><b>Pick a name</b><span>Type it above. It becomes your app's address, like my-app.rennko.tech.</span></li>
+      <li><b>Add the SDK</b><span>One import line in your page gives you sign-in, a live database and storage. Nothing to install.</span></li>
+      <li><b>Deploy</b><span>Drop your site's folder into the Hosting tab, or run <code>rennko deploy</code>. It's live right away.</span></li></ol></div>`;
+    return;
+  }
+  const card = (p, info) => {
+    const st = info?.suspended ? '<span class="badge bad">Suspended</span>' : info?.hosting ? '<span class="badge live">Site live</span>' : '<span class="badge">No site yet</span>';
+    const u = info?.usage;
+    return `<div class="card pcard">
+      <a class="stretch" href="#/p/${esc(p.id)}" aria-label="Manage ${esc(p.id)}"></a>
+      <div class="ptop"><div class="ptile" style="--h:${hue(p.id)}">${esc(p.id[0].toUpperCase())}</div>
+        <div class="pname"><h3>${esc(p.id)}</h3><div class="url">${esc(p.url.replace(/^https?:\/\//, ''))}</div></div>${st}</div>
+      <div class="pstats"><div><b>${u ? u.users : '—'}</b><span>users</span></div><div><b>${u ? u.docs : '—'}</b><span>docs</span></div><div><b>${u ? fmtBytes(u.bytes) : '—'}</b><span>storage</span></div></div>
+      <div class="pfoot"><span class="dim small">Created ${fmtDate(p.created)}</span><span class="row"><a class="btn small-btn" href="${esc(p.url)}" target="_blank" rel="noopener">Open site ↗</a><a class="btn small-btn primary" href="#/p/${esc(p.id)}">Manage</a></span></div>
+    </div>`;
+  };
+  list.innerHTML = projects.map(p => card(p)).join('');
+  // Fill in live stats from each project
+  const infos = await Promise.all(projects.map(p => call(p.url, '/__/admin/info').catch(() => null)));
+  if (document.getElementById('list') === list) list.innerHTML = projects.map((p, i) => card(p, infos[i])).join('');
 }
 
 // ---- a project ----
