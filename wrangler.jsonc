@@ -1,0 +1,21 @@
+{
+  // Rennko Cloud. Local: ./build.sh   Deploy: ./build.sh deploy
+  "name": "rennko-cloud",
+  "main": "src/worker.js",
+  "compatibility_date": "2025-10-01",
+  "assets": { "directory": "public", "binding": "ASSETS", "run_worker_first": true },
+  "durable_objects": { "bindings": [{ "name": "PROJECT", "class_name": "Project" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Project"] }],
+  "vars": {
+    // Apps live at <project>.BASE_DOMAIN, the dashboard at console.BASE_DOMAIN
+    "BASE_DOMAIN": "rennko.tech",
+    // Seconds the edge caches hosted files (0 = always fresh)
+    "HOSTING_CACHE": "60",
+    // Free-plan guard rails: the whole Cloudflare account gets 5 GB of storage
+    "PROJECT_CAP_MB": "500",
+    "MAX_FILE_MB": "25",
+    "MAX_PROJECTS": "5"
+  },
+  "routes": [{ "pattern": "*.rennko.tech/*", "zone_name": "rennko.tech" }],
+  "observability": { "enabled": true }
+}

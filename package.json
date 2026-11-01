@@ -1,0 +1,14 @@
+{
+  "name": "rennko-cloud",
+  "version": "0.1.0",
+  "description": "Free, open-source, offline-first Firebase alternative on Cloudflare: auth, realtime database, storage and hosting.",
+  "type": "module",
+  "license": "MIT",
+  "bin": { "rennko": "cli/rennko.mjs" },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "./build.sh test"
+  },
+  "devDependencies": { "wrangler": "^4.40.0" }
+}
